@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ExecutionCenterView: View {
     @EnvironmentObject private var model: FocusFlowAppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var stageListExpanded = false
 
     private var currentStage: StagePlan? {
@@ -28,39 +29,39 @@ struct ExecutionCenterView: View {
                 if let task = model.currentTask, let stage = currentStage {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(task.title)
-                            .font(.system(size: 34, weight: .bold))
-                            .foregroundStyle(FFColors.ink)
+                            .font(AppFont.pageTitle)
+                            .foregroundStyle(AppColor.textPrimary)
                         Text("Stage \(stage.order) of \(task.stages.count)")
                             .font(.title3)
-                            .foregroundStyle(FFColors.softGray)
+                            .foregroundStyle(AppColor.textSecondary)
                     }
 
                     HStack(alignment: .top, spacing: 20) {
                         VStack(alignment: .leading, spacing: 18) {
                             Text(stage.title)
                                 .font(.title.weight(.bold))
-                                .foregroundStyle(FFColors.ink)
+                                .foregroundStyle(AppColor.textPrimary)
                             Text(stage.instruction)
                                 .font(.title3)
-                                .foregroundStyle(FFColors.ink)
+                                .foregroundStyle(AppColor.textPrimary)
                             Text("Stop when: \(stage.completionCriteria)")
                                 .font(.callout.weight(.medium))
-                                .foregroundStyle(FFColors.softGray)
+                                .foregroundStyle(AppColor.textSecondary)
 
                             TimerReadout(seconds: model.remainingSeconds ?? stage.estimatedSeconds)
 
                             if isCollectingFeedback {
                                 HStack(spacing: 10) {
                                     Image(systemName: "checkmark.seal.fill")
-                                        .foregroundStyle(FFColors.mint)
+                                        .foregroundStyle(AppColor.success)
                                     Text("Step saved. Answer the quick check-in below before moving on.")
                                         .font(.headline)
-                                        .foregroundStyle(FFColors.ink)
+                                        .foregroundStyle(AppColor.textPrimary)
                                 }
                                 .padding(14)
-                                .background(FFColors.mint.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
+                                .background(AppColor.success.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
                             } else {
-                                HStack {
+                                AdaptiveButtonRow {
                                     Button {
                                         if stage.status == .running || stage.status == .paused || stage.status == .overtime {
                                             model.pauseOrResume()
@@ -100,7 +101,7 @@ struct ExecutionCenterView: View {
                             }
 
                             if !isCollectingFeedback {
-                                HStack {
+                                AdaptiveButtonRow {
                                     Button("Skip for now") { model.skipStage() }
                                         .buttonStyle(SecondaryButtonStyle())
                                         .accessibilityIdentifier("stage_skip_button")
@@ -112,14 +113,14 @@ struct ExecutionCenterView: View {
                                         .accessibilityIdentifier("complete_task_now_button")
                                     Button("End task") { model.abandonCurrentTask(reason: "You chose to end this task from the execution center.") }
                                         .buttonStyle(.plain)
-                                        .foregroundStyle(FFColors.softGray)
+                                        .foregroundStyle(AppColor.textSecondary)
                                         .accessibilityIdentifier("end_task_button")
                                 }
                             }
                         }
                         .padding(24)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
 
                         FloatingCapsulePreview(stage: stage, seconds: model.remainingSeconds ?? stage.estimatedSeconds)
                             .frame(width: 250)
@@ -132,14 +133,14 @@ struct ExecutionCenterView: View {
                     if let fallback = model.notificationFallbackMessage {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: "bell.slash")
-                                .foregroundStyle(FFColors.peach)
+                                .foregroundStyle(AppColor.warning)
                             Text(fallback)
                                 .font(.callout.weight(.medium))
-                                .foregroundStyle(FFColors.ink)
+                                .foregroundStyle(AppColor.textPrimary)
                             Spacer()
                         }
                         .padding(16)
-                        .background(FFColors.peach.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
+                        .background(AppColor.warning.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
                     }
 
                     if model.interventionPanelVisible {
@@ -149,18 +150,18 @@ struct ExecutionCenterView: View {
                     if let breakRemaining = model.breakRemainingSeconds, breakRemaining > 0 {
                         HStack {
                             Image(systemName: "cup.and.saucer")
-                                .foregroundStyle(FFColors.peach)
+                                .foregroundStyle(AppColor.warning)
                             Text("Break")
                                 .font(.headline)
-                                .foregroundStyle(FFColors.ink)
+                                .foregroundStyle(AppColor.textPrimary)
                             Spacer()
                             Text(String(format: "%02d:%02d", breakRemaining / 60, breakRemaining % 60))
                                 .font(.system(.title3, design: .rounded).weight(.bold))
                                 .monospacedDigit()
-                                .foregroundStyle(FFColors.blue)
+                                .foregroundStyle(AppColor.actionPrimary)
                         }
                         .padding(18)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
                     }
 
                     if !model.feedbackOptions.isEmpty {
@@ -177,7 +178,7 @@ struct ExecutionCenterView: View {
 
                     VStack(alignment: .leading, spacing: 10) {
                         Button {
-                            withAnimation(.easeInOut(duration: 0.16)) {
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
                                 stageListExpanded.toggle()
                             }
                         } label: {
@@ -190,7 +191,7 @@ struct ExecutionCenterView: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(FFColors.ink)
+                        .foregroundStyle(AppColor.textPrimary)
                         .accessibilityIdentifier("toggle_stage_list_button")
 
                         if stageListExpanded {
@@ -202,18 +203,18 @@ struct ExecutionCenterView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(item.title)
                                             .font(.callout.weight(.semibold))
-                                            .foregroundStyle(FFColors.ink)
+                                            .foregroundStyle(AppColor.textPrimary)
                                         Text(item.estimatedSeconds.minutesText)
                                             .font(.caption)
-                                            .foregroundStyle(FFColors.softGray)
+                                            .foregroundStyle(AppColor.textSecondary)
                                     }
                                     Spacer()
                                     Text(item.status.rawValue)
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(FFColors.softGray)
+                                        .foregroundStyle(AppColor.textSecondary)
                                 }
                                 .padding(12)
-                                .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 8))
+                                .background(AppColor.surfaceCard.opacity(0.82), in: RoundedRectangle(cornerRadius: 8))
                             }
                         }
                     }
@@ -239,10 +240,10 @@ struct ExecutionCenterView: View {
 
     private func color(for status: StageStatus) -> Color {
         switch status {
-        case .completed: FFColors.mint
-        case .running, .overtime: FFColors.blue
-        case .paused: FFColors.peach
-        default: FFColors.softGray
+        case .completed: AppColor.success
+        case .running, .overtime: AppColor.actionPrimary
+        case .paused: AppColor.warning
+        default: AppColor.textSecondary
         }
     }
 }
@@ -254,11 +255,11 @@ struct InterventionPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("We can make this gentler")
                 .font(.title2.weight(.bold))
-                .foregroundStyle(FFColors.ink)
+                .foregroundStyle(AppColor.textPrimary)
             Text(model.interventionReason)
                 .font(.body)
-                .foregroundStyle(FFColors.ink)
-            HStack {
+                .foregroundStyle(AppColor.textPrimary)
+            AdaptiveButtonRow {
                 Button("Save progress") {
                     model.saveProgressFromIntervention()
                 }
@@ -283,11 +284,11 @@ struct InterventionPanel: View {
                     model.interventionPanelVisible = false
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(FFColors.softGray)
+                .foregroundStyle(AppColor.textSecondary)
             }
         }
         .padding(20)
-        .background(FFColors.lavender, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -297,10 +298,12 @@ struct TimerReadout: View {
     var body: some View {
         let display = max(0, seconds)
         Text(String(format: "%02d:%02d", display / 60, display % 60))
-            .font(.system(size: 72, weight: .bold, design: .rounded))
-            .foregroundStyle(display <= 120 ? FFColors.peach : FFColors.blue)
+            .font(.system(.largeTitle, design: .rounded).weight(.bold))
+            .foregroundStyle(display <= 120 ? AppColor.warning : AppColor.actionPrimary)
             .monospacedDigit()
             .frame(maxWidth: .infinity, alignment: .leading)
+            .minimumScaleFactor(0.75)
+            .accessibilityLabel("\(display / 60) minutes \(display % 60) seconds remaining")
     }
 }
 
@@ -313,7 +316,7 @@ struct FloatingCapsulePreview: View {
         VStack(spacing: 18) {
             Text("Floating timer")
                 .font(.caption.weight(.bold))
-                .foregroundStyle(FFColors.softGray)
+                .foregroundStyle(AppColor.textSecondary)
             TimerReadout(seconds: seconds)
                 .scaleEffect(0.56)
                 .frame(height: 70)
@@ -331,8 +334,8 @@ struct FloatingCapsulePreview: View {
                 .buttonStyle(PrimaryButtonStyle())
         }
         .padding(20)
-        .background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(FFColors.blue.opacity(0.16)))
+        .background(AppColor.surfaceCard.opacity(0.78), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.actionPrimary.opacity(0.16)))
     }
 }
 
@@ -344,8 +347,8 @@ struct FeedbackSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("How did this step feel?")
                 .font(.title2.weight(.bold))
-                .foregroundStyle(FFColors.ink)
-            HStack {
+                .foregroundStyle(AppColor.textPrimary)
+            AdaptiveButtonRow {
                 ForEach(options) { option in
                     Button {
                         model.submitFeedback(option)
@@ -360,9 +363,11 @@ struct FeedbackSheet: View {
                     }
                     .buttonStyle(SecondaryButtonStyle())
                     .accessibilityIdentifier("feedback_option_\(option.intent.rawValue)")
+                    .accessibilityLabel(option.label)
+                    .accessibilityHint("Submits feedback for this completed step.")
                 }
             }
-            HStack {
+            AdaptiveButtonRow {
                 Button {
                     if model.isListeningForVoice {
                         model.stopVoiceInput()
@@ -377,7 +382,7 @@ struct FeedbackSheet: View {
                 if !model.voiceTranscript.isEmpty {
                     Text(model.voiceTranscript)
                         .font(.callout)
-                        .foregroundStyle(FFColors.softGray)
+                        .foregroundStyle(AppColor.textSecondary)
                         .lineLimit(2)
                 }
             }
@@ -398,17 +403,18 @@ struct FeedbackSheet: View {
                 model.skipFeedbackAndContinue()
             }
             .buttonStyle(.plain)
-            .foregroundStyle(FFColors.softGray)
+            .foregroundStyle(AppColor.textSecondary)
             .accessibilityIdentifier("skip_feedback_button")
             Button("Stop here") {
                 model.submitFeedback(FeedbackOption(label: "Stop here", emoji: "🌙", intent: .wantToQuit))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(FFColors.softGray)
+            .foregroundStyle(AppColor.textSecondary)
             .accessibilityIdentifier("stop_here_feedback_button")
         }
         .padding(20)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -429,16 +435,16 @@ struct PlanAdjustmentPreviewCard: View {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "slider.horizontal.3")
                     .font(.title2)
-                    .foregroundStyle(FFColors.blue)
+                    .foregroundStyle(AppColor.actionPrimary)
                     .frame(width: 36, height: 36)
-                    .background(FFColors.blue.opacity(0.12), in: Circle())
+                    .background(AppColor.actionPrimary.opacity(0.12), in: Circle())
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Suggested plan adjustment")
                         .font(.title2.weight(.bold))
-                        .foregroundStyle(FFColors.ink)
+                        .foregroundStyle(AppColor.textPrimary)
                     Text(update.reason)
                         .font(.callout)
-                        .foregroundStyle(FFColors.softGray)
+                        .foregroundStyle(AppColor.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -447,21 +453,21 @@ struct PlanAdjustmentPreviewCard: View {
             HStack(alignment: .top, spacing: 14) {
                 StagePreviewColumn(
                     title: "Original",
-                    tint: FFColors.softGray,
+                    tint: AppColor.textSecondary,
                     stages: originalStages
                 )
                 Image(systemName: "arrow.right")
                     .font(.headline)
-                    .foregroundStyle(FFColors.softGray)
+                    .foregroundStyle(AppColor.textSecondary)
                     .padding(.top, 34)
                 StagePreviewColumn(
                     title: "Suggested",
-                    tint: FFColors.mint,
+                    tint: AppColor.success,
                     stages: proposedStages
                 )
             }
 
-            HStack {
+            AdaptiveButtonRow {
                 Button {
                     model.keepOriginalPlanAfterFeedback()
                 } label: {
@@ -478,8 +484,8 @@ struct PlanAdjustmentPreviewCard: View {
             }
         }
         .padding(20)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(FFColors.blue.opacity(0.14)))
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.actionPrimary.opacity(0.14)))
     }
 }
 
@@ -496,24 +502,24 @@ struct StagePreviewColumn: View {
             if stages.isEmpty {
                 Text("No remaining step will change.")
                     .font(.callout)
-                    .foregroundStyle(FFColors.softGray)
+                    .foregroundStyle(AppColor.textSecondary)
                     .padding(12)
                     .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
-                    .background(FFColors.canvas.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                    .background(AppColor.bgBase.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
             } else {
                 ForEach(stages) { stage in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(stage.title)
                             .font(.callout.weight(.semibold))
-                            .foregroundStyle(FFColors.ink)
+                            .foregroundStyle(AppColor.textPrimary)
                             .lineLimit(2)
                         Text(stage.estimatedSeconds.minutesText)
                             .font(.caption)
-                            .foregroundStyle(FFColors.softGray)
+                            .foregroundStyle(AppColor.textSecondary)
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
-                    .background(FFColors.canvas.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                    .background(AppColor.bgBase.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -529,16 +535,16 @@ struct PostFeedbackCard: View {
         HStack(alignment: .center, spacing: 16) {
             Image(systemName: "sparkles")
                 .font(.title2)
-                .foregroundStyle(FFColors.blue)
+                .foregroundStyle(AppColor.actionPrimary)
                 .frame(width: 36, height: 36)
-                .background(FFColors.blue.opacity(0.12), in: Circle())
+                .background(AppColor.actionPrimary.opacity(0.12), in: Circle())
             VStack(alignment: .leading, spacing: 4) {
                 Text("Feedback applied")
                     .font(.headline)
-                    .foregroundStyle(FFColors.ink)
+                    .foregroundStyle(AppColor.textPrimary)
                 Text(message)
                     .font(.callout)
-                    .foregroundStyle(FFColors.softGray)
+                    .foregroundStyle(AppColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
@@ -558,7 +564,7 @@ struct PostFeedbackCard: View {
             .buttonStyle(PrimaryButtonStyle())
         }
         .padding(20)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -570,11 +576,11 @@ struct StuckHelpCard: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(response.comfortText)
                 .font(.headline)
-                .foregroundStyle(FFColors.ink)
+                .foregroundStyle(AppColor.textPrimary)
             Text(response.nextSmallStep)
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(FFColors.ink)
-            HStack {
+                .foregroundStyle(AppColor.textPrimary)
+            AdaptiveButtonRow {
                 ForEach(response.actions) { action in
                     Button(action.title) {
                         model.handleStuckAction(action)
@@ -584,7 +590,9 @@ struct StuckHelpCard: View {
             }
         }
         .padding(20)
-        .background(FFColors.lavender, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(response.comfortText) Next step: \(response.nextSmallStep)")
     }
 }
 
@@ -594,14 +602,14 @@ struct EmptyExecutionView: View {
     var body: some View {
         VStack(spacing: 18) {
             Image(systemName: "sparkles")
-                .font(.system(size: 52))
-                .foregroundStyle(FFColors.blue)
+                .font(.largeTitle)
+                .foregroundStyle(AppColor.actionPrimary)
             Text("No active task yet")
                 .font(.title.weight(.bold))
-                .foregroundStyle(FFColors.ink)
+                .foregroundStyle(AppColor.textPrimary)
             Text("Start with one messy learning task, and FocusFlow will make the first step clear.")
                 .font(.title3)
-                .foregroundStyle(FFColors.softGray)
+                .foregroundStyle(AppColor.textSecondary)
             Button("Create a task") {
                 model.route = .input
             }

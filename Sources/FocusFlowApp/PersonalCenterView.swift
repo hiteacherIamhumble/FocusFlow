@@ -10,17 +10,24 @@ struct PersonalCenterView: View {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Personal center")
-                        .font(.system(size: 38, weight: .bold))
-                        .foregroundStyle(FFColors.ink)
+                        .font(AppFont.pageTitle)
+                        .foregroundStyle(AppColor.textPrimary)
                     Text(model.stats?.gentleRhythmText ?? "FocusFlow is still learning your rhythm.")
                         .font(.title3)
-                        .foregroundStyle(FFColors.softGray)
+                        .foregroundStyle(AppColor.textSecondary)
                 }
 
-                HStack(spacing: 14) {
-                    MetricCard(title: "Learning rhythm", value: "\(model.stats?.activeDays ?? 0) days", tint: FFColors.mint)
-                    MetricCard(title: "This week focus", value: (model.stats?.totalFocusSeconds ?? 0).minutesText, tint: FFColors.blue)
-                    MetricCard(title: "Stages completed", value: "\(model.stats?.completedStageCount ?? 0)", tint: FFColors.peach)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 14) {
+                        MetricCard(title: "Learning rhythm", value: "\(model.stats?.activeDays ?? 0) days", tint: AppColor.success)
+                        MetricCard(title: "This week focus", value: (model.stats?.totalFocusSeconds ?? 0).minutesText, tint: AppColor.actionPrimary)
+                        MetricCard(title: "Stages completed", value: "\(model.stats?.completedStageCount ?? 0)", tint: AppColor.warning)
+                    }
+                    VStack(spacing: 14) {
+                        MetricCard(title: "Learning rhythm", value: "\(model.stats?.activeDays ?? 0) days", tint: AppColor.success)
+                        MetricCard(title: "This week focus", value: (model.stats?.totalFocusSeconds ?? 0).minutesText, tint: AppColor.actionPrimary)
+                        MetricCard(title: "Stages completed", value: "\(model.stats?.completedStageCount ?? 0)", tint: AppColor.warning)
+                    }
                 }
 
                 FocusTrendView(points: model.dailyStats)
@@ -28,13 +35,13 @@ struct PersonalCenterView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Agent observation")
                         .font(.headline)
-                        .foregroundStyle(FFColors.ink)
+                        .foregroundStyle(AppColor.textPrimary)
                     Text(model.agentObservation.text)
                         .font(.title3.weight(.semibold))
-                        .foregroundStyle(FFColors.ink)
+                        .foregroundStyle(AppColor.textPrimary)
                         .padding(18)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
                     Button {
                         model.markProfileObservationInaccurate()
                     } label: {
@@ -47,8 +54,8 @@ struct PersonalCenterView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Recent history")
                         .font(.headline)
-                        .foregroundStyle(FFColors.ink)
-                    HStack {
+                        .foregroundStyle(AppColor.textPrimary)
+                    AdaptiveButtonRow {
                         TextField("Try: last week reading records", text: $model.naturalHistoryQuery)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 280)
@@ -57,7 +64,7 @@ struct PersonalCenterView: View {
                         }
                         .buttonStyle(SecondaryButtonStyle())
                     }
-                    HStack {
+                    AdaptiveButtonRow {
                         TextField("Search task or stage", text: $model.historyKeyword)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 260)
@@ -93,10 +100,10 @@ struct PersonalCenterView: View {
                     if model.history.isEmpty {
                         Text("No learning history yet. The first small step will show up here.")
                             .font(.body)
-                            .foregroundStyle(FFColors.softGray)
+                            .foregroundStyle(AppColor.textSecondary)
                             .padding(18)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                            .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
                     } else {
                         ForEach(model.history) { item in
                             Button {
@@ -106,23 +113,23 @@ struct PersonalCenterView: View {
                                     VStack(alignment: .leading, spacing: 5) {
                                         Text(item.title)
                                             .font(.headline)
-                                            .foregroundStyle(FFColors.ink)
+                                            .foregroundStyle(AppColor.textPrimary)
                                         Text("\(item.localDay) · \(item.taskType?.readableName ?? "Learning")")
                                             .font(.caption)
-                                            .foregroundStyle(FFColors.softGray)
+                                            .foregroundStyle(AppColor.textSecondary)
                                     }
                                     Spacer()
                                     Text("\(item.completedStageCount) steps")
                                         .font(.callout.weight(.semibold))
-                                        .foregroundStyle(FFColors.blue)
+                                        .foregroundStyle(AppColor.actionPrimary)
                                     Text(item.totalFocusSeconds.minutesText)
                                         .font(.callout.weight(.semibold))
-                                        .foregroundStyle(FFColors.softGray)
+                                        .foregroundStyle(AppColor.textSecondary)
                                     Image(systemName: "chevron.right")
-                                        .foregroundStyle(FFColors.softGray)
+                                        .foregroundStyle(AppColor.textSecondary)
                                 }
                                 .padding(16)
-                                .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                                .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
                             }
                             .buttonStyle(.plain)
                         }
@@ -134,10 +141,10 @@ struct PersonalCenterView: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(detail.title)
                                         .font(.title3.weight(.bold))
-                                        .foregroundStyle(FFColors.ink)
+                                        .foregroundStyle(AppColor.textPrimary)
                                     Text("\(detail.firstLocalDay) to \(detail.latestLocalDay) · \(detail.eventCount) events")
                                         .font(.caption)
-                                        .foregroundStyle(FFColors.softGray)
+                                        .foregroundStyle(AppColor.textSecondary)
                                 }
                                 Spacer()
                                 Button("Delete this task history") {
@@ -145,52 +152,59 @@ struct PersonalCenterView: View {
                                 }
                                 .buttonStyle(SecondaryButtonStyle())
                             }
-                            HStack {
-                                MetricCard(title: "Focus", value: detail.totalFocusSeconds.minutesText, tint: FFColors.blue)
-                                MetricCard(title: "Completed", value: "\(detail.completedStageCount)", tint: FFColors.mint)
-                                MetricCard(title: "Saved/Skipped", value: "\(detail.skippedStageCount + detail.abandonedStageCount)", tint: FFColors.peach)
+                            ViewThatFits(in: .horizontal) {
+                                HStack {
+                                    MetricCard(title: "Focus", value: detail.totalFocusSeconds.minutesText, tint: AppColor.actionPrimary)
+                                    MetricCard(title: "Completed", value: "\(detail.completedStageCount)", tint: AppColor.success)
+                                    MetricCard(title: "Saved/Skipped", value: "\(detail.skippedStageCount + detail.abandonedStageCount)", tint: AppColor.warning)
+                                }
+                                VStack(spacing: 10) {
+                                    MetricCard(title: "Focus", value: detail.totalFocusSeconds.minutesText, tint: AppColor.actionPrimary)
+                                    MetricCard(title: "Completed", value: "\(detail.completedStageCount)", tint: AppColor.success)
+                                    MetricCard(title: "Saved/Skipped", value: "\(detail.skippedStageCount + detail.abandonedStageCount)", tint: AppColor.warning)
+                                }
                             }
                             ForEach(detail.stages) { stage in
                                 HStack {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(stage.title)
                                             .font(.callout.weight(.semibold))
-                                            .foregroundStyle(FFColors.ink)
+                                            .foregroundStyle(AppColor.textPrimary)
                                         Text(stage.status ?? "recorded")
                                             .font(.caption)
-                                            .foregroundStyle(FFColors.softGray)
+                                            .foregroundStyle(AppColor.textSecondary)
                                     }
                                     Spacer()
                                     Text((stage.actualFocusSeconds ?? 0).minutesText)
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(FFColors.blue)
+                                        .foregroundStyle(AppColor.actionPrimary)
                                 }
                                 .padding(12)
-                                .background(Color.white.opacity(0.86), in: RoundedRectangle(cornerRadius: 8))
+                                .background(AppColor.surfaceCard.opacity(0.86), in: RoundedRectangle(cornerRadius: 8))
                             }
                         }
                         .padding(16)
-                        .background(FFColors.lavender, in: RoundedRectangle(cornerRadius: 8))
+                        .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Achievement garden")
                         .font(.headline)
-                        .foregroundStyle(FFColors.ink)
+                        .foregroundStyle(AppColor.textPrimary)
                     if !model.pendingAchievements.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(model.pendingAchievements) { achievement in
                                 HStack {
                                     Image(systemName: achievement.iconName)
-                                        .foregroundStyle(FFColors.peach)
+                                        .foregroundStyle(AppColor.warning)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(achievement.title)
                                             .font(.headline)
-                                            .foregroundStyle(FFColors.ink)
+                                            .foregroundStyle(AppColor.textPrimary)
                                         Text(achievement.message)
                                             .font(.callout)
-                                            .foregroundStyle(FFColors.softGray)
+                                            .foregroundStyle(AppColor.textSecondary)
                                     }
                                     Spacer()
                                     Button("Save") {
@@ -199,7 +213,7 @@ struct PersonalCenterView: View {
                                     .buttonStyle(SecondaryButtonStyle())
                                 }
                                 .padding(14)
-                                .background(FFColors.peach.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+                                .background(AppColor.warning.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
                             }
                         }
                     }
@@ -237,11 +251,11 @@ struct FocusTrendView: View {
             HStack {
                 Text("7-day focus trend")
                     .font(.headline)
-                    .foregroundStyle(FFColors.ink)
+                    .foregroundStyle(AppColor.textPrimary)
                 Spacer()
                 Text("\(points.reduce(0) { $0 + $1.completedStageCount }) steps")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(FFColors.blue)
+                    .foregroundStyle(AppColor.actionPrimary)
             }
             if hasFocusData {
                 Chart(points) { point in
@@ -249,7 +263,7 @@ struct FocusTrendView: View {
                         x: .value("Day", dayLabel(point.localDay)),
                         y: .value("Minutes", Double(point.focusSeconds) / 60.0)
                     )
-                    .foregroundStyle(FFColors.blue.gradient)
+                    .foregroundStyle(AppColor.actionPrimary.gradient)
                     .cornerRadius(5)
                 }
                 .chartYAxis {
@@ -258,33 +272,35 @@ struct FocusTrendView: View {
                 .chartXAxis {
                     AxisMarks { value in
                         AxisValueLabel()
-                            .foregroundStyle(FFColors.softGray)
+                            .foregroundStyle(AppColor.textSecondary)
                     }
                 }
                 .frame(height: 150)
+                .accessibilityLabel("Seven day focus trend")
+                .accessibilityValue("\(points.reduce(0) { $0 + $1.completedStageCount }) completed steps")
             } else {
                 Text("No focus minutes recorded yet.")
                     .font(.callout)
-                    .foregroundStyle(FFColors.softGray)
+                    .foregroundStyle(AppColor.textSecondary)
                     .frame(maxWidth: .infinity, minHeight: 150, alignment: .center)
-                    .background(FFColors.canvas.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                    .background(AppColor.bgBase.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
             }
             HStack(spacing: 8) {
                 ForEach(points) { point in
                     VStack(spacing: 4) {
                         Text(dayLabel(point.localDay))
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(FFColors.softGray)
+                            .foregroundStyle(AppColor.textSecondary)
                         Text("\(point.completedStageCount)")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(point.completedStageCount > 0 ? FFColors.mint : FFColors.softGray)
+                            .foregroundStyle(point.completedStageCount > 0 ? AppColor.success : AppColor.textSecondary)
                     }
                     .frame(maxWidth: .infinity)
                 }
             }
         }
         .padding(18)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func dayLabel(_ localDay: String) -> String {
@@ -302,30 +318,32 @@ struct Badge: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.title3.weight(.semibold))
                     .frame(width: 28, height: 28)
-                    .foregroundStyle(unlocked ? FFColors.blue : FFColors.softGray)
+                    .foregroundStyle(unlocked ? AppColor.actionPrimary : AppColor.textSecondary)
                 Text(title)
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(FFColors.ink)
+                    .foregroundStyle(AppColor.textPrimary)
                     .lineLimit(2)
                 Spacer(minLength: 0)
             }
             Text(message)
                 .font(.caption)
-                .foregroundStyle(FFColors.softGray)
+                .foregroundStyle(AppColor.textSecondary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
-        .background((unlocked ? FFColors.peach.opacity(0.22) : Color.white.opacity(0.70)), in: RoundedRectangle(cornerRadius: 8))
+        .background((unlocked ? AppColor.warning.opacity(0.22) : AppColor.surfaceCard.opacity(0.70)), in: RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .topTrailing) {
             Image(systemName: unlocked ? "checkmark.circle.fill" : "lock")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(unlocked ? FFColors.mint : FFColors.softGray.opacity(0.7))
+                .foregroundStyle(unlocked ? AppColor.success : AppColor.textSecondary.opacity(0.7))
                 .padding(10)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(unlocked ? "Unlocked" : "Locked"). \(message)")
     }
 }

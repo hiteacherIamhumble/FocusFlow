@@ -10,20 +10,20 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Settings")
-                        .font(.system(size: 38, weight: .bold))
-                        .foregroundStyle(FFColors.ink)
+                        .font(AppFont.pageTitle)
+                        .foregroundStyle(AppColor.textPrimary)
                     Text("Keep the assistant quiet, local, and adjustable.")
                         .font(.title3)
-                        .foregroundStyle(FFColors.softGray)
+                        .foregroundStyle(AppColor.textSecondary)
                 }
 
                 settingsGroup("System readiness") {
                     HStack(spacing: 10) {
                         Image(systemName: model.readinessReport.isPrototypeReady ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(model.readinessReport.isPrototypeReady ? FFColors.mint : FFColors.peach)
+                            .foregroundStyle(model.readinessReport.isPrototypeReady ? AppColor.success : AppColor.warning)
                         Text(model.readinessReport.summaryText)
                             .font(.callout.weight(.semibold))
-                            .foregroundStyle(FFColors.ink)
+                            .foregroundStyle(AppColor.textPrimary)
                         Spacer()
                         Button("Refresh") {
                             Task { await model.refreshReadiness() }
@@ -35,7 +35,7 @@ struct SettingsView: View {
                             readinessRow(item)
                         }
                     }
-                    HStack {
+                    AdaptiveButtonRow {
                         Button("Open notification settings") {
                             model.openNotificationSettings()
                         }
@@ -61,16 +61,23 @@ struct SettingsView: View {
 
                 settingsGroup("Focus support") {
                     Toggle("System notifications", isOn: $model.settings.notificationsEnabled)
-                    HStack {
-                        Text("Floating timer opacity")
-                        Slider(value: $model.settings.floatingTimerOpacity, in: 0.35...1.0)
-                            .frame(maxWidth: 260)
-                        Text("\(Int(model.settings.floatingTimerOpacity * 100))%")
-                            .foregroundStyle(FFColors.softGray)
+                    ViewThatFits(in: .horizontal) {
+                        HStack {
+                            Text("Floating timer opacity")
+                            Slider(value: $model.settings.floatingTimerOpacity, in: 0.35...1.0)
+                                .frame(maxWidth: 260)
+                            Text("\(Int(model.settings.floatingTimerOpacity * 100))%")
+                                .foregroundStyle(AppColor.textSecondary)
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Floating timer opacity")
+                            Slider(value: $model.settings.floatingTimerOpacity, in: 0.35...1.0)
+                            Text("\(Int(model.settings.floatingTimerOpacity * 100))%")
+                                .foregroundStyle(AppColor.textSecondary)
+                        }
                     }
-                    HStack {
+                    AdaptiveButtonRow {
                         Text("Floating timer position")
-                        Spacer()
                         Button("Reset position") {
                             model.resetFloatingTimerPosition()
                         }
@@ -99,11 +106,11 @@ struct SettingsView: View {
                     Toggle("Local encryption", isOn: $model.settings.localEncryptionEnabled)
                     Text("When enabled, new task, runtime, history, profile, achievement, and closure files are encrypted with a Keychain-backed key.")
                         .font(.callout)
-                        .foregroundStyle(FFColors.softGray)
+                        .foregroundStyle(AppColor.textSecondary)
                     Toggle("Remote agent personalization", isOn: $model.settings.remoteAgentEnabled)
                     Text("FocusFlow stores learning events locally under Application Support. It does not record screenshots, keystrokes, page text, or medical diagnoses.")
                         .font(.callout)
-                        .foregroundStyle(FFColors.softGray)
+                        .foregroundStyle(AppColor.textSecondary)
                     Button("Save privacy settings") {
                         model.saveSettings()
                     }
@@ -113,9 +120,9 @@ struct SettingsView: View {
                     }
                     .buttonStyle(SecondaryButtonStyle())
                     if confirmingDeleteAllData {
-                        HStack {
+                        AdaptiveButtonRow {
                             Label("This deletes local events, tasks, profile, and settings.", systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(FFColors.peach)
+                                .foregroundStyle(AppColor.warning)
                             Button("Confirm delete") {
                                 model.deleteAllData()
                                 confirmingDeleteAllData = false
@@ -134,7 +141,7 @@ struct SettingsView: View {
                         .buttonStyle(SecondaryButtonStyle())
                         .accessibilityIdentifier("delete_all_data_button")
                     }
-                    HStack {
+                    AdaptiveButtonRow {
                         Picker("Export format", selection: $model.exportFormat) {
                             Text("Markdown").tag("Markdown")
                             Text("JSON").tag("JSON")
@@ -151,14 +158,14 @@ struct SettingsView: View {
                 settingsGroup("Remote agent") {
                     Text(model.remoteAgentStatus)
                         .font(.callout.weight(.semibold))
-                        .foregroundStyle(FFColors.ink)
+                        .foregroundStyle(AppColor.textPrimary)
                     Text("Set DEEPSEEK_API_KEY in the launch environment to enable DeepSeek v4 flash. The key is never committed to the project.")
                         .font(.callout)
-                        .foregroundStyle(FFColors.softGray)
+                        .foregroundStyle(AppColor.textSecondary)
                     SecureField("Paste DeepSeek API key for Keychain storage", text: $model.deepSeekAPIKeyDraft)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 460)
-                    HStack {
+                    AdaptiveButtonRow {
                         Button("Save key to Keychain") {
                             model.saveDeepSeekKey()
                         }
@@ -178,10 +185,10 @@ struct SettingsView: View {
                     Toggle("Global shortcuts", isOn: $model.settings.globalShortcutsEnabled)
                     Text(model.hotKeyStatus)
                         .font(.callout)
-                        .foregroundStyle(FFColors.softGray)
+                        .foregroundStyle(AppColor.textSecondary)
                     if !model.settings.shortcutKeys.duplicateKeys.isEmpty {
                         Label("Each shortcut needs a different letter.", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(FFColors.peach)
+                            .foregroundStyle(AppColor.warning)
                     }
                     shortcutPicker("Pause or resume current stage", key: $model.settings.shortcutKeys.pauseResume)
                     shortcutPicker("Skip feedback or sheet", key: $model.settings.shortcutKeys.skip)
@@ -203,14 +210,14 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title)
                 .font(.headline)
-                .foregroundStyle(FFColors.ink)
+                .foregroundStyle(AppColor.textPrimary)
             content()
                 .font(.body)
-                .foregroundStyle(FFColors.ink)
+                .foregroundStyle(AppColor.textPrimary)
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func shortcutPicker(_ label: String, key: Binding<String>) -> some View {
@@ -221,15 +228,15 @@ struct SettingsView: View {
             if duplicates.contains(key.wrappedValue) {
                 Label("Conflict", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(FFColors.peach)
+                    .foregroundStyle(AppColor.warning)
             } else {
                 Label("Ready", systemImage: "checkmark.circle")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(FFColors.mint)
+                    .foregroundStyle(AppColor.success)
             }
             Text("⌘ ⇧")
                 .font(.system(.body, design: .monospaced).weight(.semibold))
-                .foregroundStyle(FFColors.softGray)
+                .foregroundStyle(AppColor.textSecondary)
             Picker("", selection: key) {
                 ForEach(FocusFlowShortcutSettings.supportedKeys, id: \.self) { key in
                     Text(key).tag(key)
@@ -244,30 +251,32 @@ struct SettingsView: View {
     private func readinessRow(_ item: AppReadinessItem) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: readinessIcon(for: item.state))
-                .font(.system(size: 16, weight: .semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(readinessColor(for: item.state))
                 .frame(width: 22, height: 22)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(item.title)
                         .font(.callout.weight(.semibold))
-                        .foregroundStyle(FFColors.ink)
+                        .foregroundStyle(AppColor.textPrimary)
                     if item.isRequired {
                         Text("Required")
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(FFColors.blue)
+                            .foregroundStyle(AppColor.actionPrimary)
                     }
                 }
                 Text(item.detail)
                     .font(.caption)
-                    .foregroundStyle(FFColors.softGray)
+                    .foregroundStyle(AppColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(FFColors.canvas.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.bgBase.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.title). \(item.state.rawValue). \(item.detail)")
     }
 
     private func readinessIcon(for state: AppReadinessState) -> String {
@@ -284,11 +293,11 @@ struct SettingsView: View {
     private func readinessColor(for state: AppReadinessState) -> Color {
         switch state {
         case .ready:
-            return FFColors.mint
+            return AppColor.success
         case .needsAttention:
-            return FFColors.peach
+            return AppColor.warning
         case .off:
-            return FFColors.softGray
+            return AppColor.textSecondary
         }
     }
 }

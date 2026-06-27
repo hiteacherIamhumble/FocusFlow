@@ -80,13 +80,13 @@ struct FloatingTimerPanel: View {
         VStack(spacing: 10) {
             Text(stageTitle)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(FFColors.softGray)
+                .foregroundStyle(AppColor.textSecondary)
                 .lineLimit(1)
             Text(String(format: "%02d:%02d", max(0, remainingSeconds) / 60, max(0, remainingSeconds) % 60))
-                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .font(.system(.title, design: .rounded).weight(.bold))
                 .monospacedDigit()
-                .foregroundStyle(FFColors.blue)
-            HStack {
+                .foregroundStyle(AppColor.actionPrimary)
+            AdaptiveButtonRow(spacing: 8) {
                 Button("I'm stuck", action: onDifficulty)
                     .buttonStyle(SecondaryButtonStyle())
                 Button("+5", action: onExtend)
@@ -97,12 +97,21 @@ struct FloatingTimerPanel: View {
         }
         .padding(14)
         .frame(width: 280, height: 150)
-        .background(.white.opacity(min(1, max(0.35, opacity))), in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.surfaceCard.opacity(min(1, max(0.35, opacity))), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(stageTitle). \(max(0, remainingSeconds) / 60) minutes \(max(0, remainingSeconds) % 60) seconds remaining.")
     }
 }
 
 struct LocalNotificationService {
+    private var canUseNotificationCenter: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
+    }
+
     func requestAuthorization() async -> Bool {
+        guard canUseNotificationCenter else {
+            return false
+        }
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
@@ -141,6 +150,9 @@ struct LocalNotificationService {
     }
 
     func cancelPendingStageReminders() {
+        guard canUseNotificationCenter else {
+            return
+        }
         Task {
             let requests = await UNUserNotificationCenter.current().pendingNotificationRequests()
             let identifiers = requests.map(\.identifier).filter { $0.hasPrefix("focusflow.") }

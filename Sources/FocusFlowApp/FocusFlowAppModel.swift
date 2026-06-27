@@ -187,8 +187,11 @@ final class FocusFlowAppModel: ObservableObject {
             return
         }
         run {
+            let canUseRemoteAgent = await self.hasRemoteAgentCredentials()
+            self.message = canUseRemoteAgent ? "Planning with DeepSeek v4 flash..." : "No DeepSeek key yet. Using local planning fallback."
             let context = try await self.agentContextForPlanning()
             let draft = try await self.planningService.createDraft(from: input, agentContext: context)
+            self.updatePlanningStatus(from: draft.task)
             if !draft.clarificationQuestions.isEmpty {
                 self.pendingPlanDraft = draft
                 self.clarificationQuestions = draft.clarificationQuestions
@@ -199,7 +202,7 @@ final class FocusFlowAppModel: ObservableObject {
                 self.clarificationQuestions = []
                 self.currentTask = plan
                 self.route = .plan
-                self.message = "A small first step is ready."
+                self.message = self.planReadyMessage(for: plan)
             }
         }
     }
@@ -215,24 +218,40 @@ final class FocusFlowAppModel: ObservableObject {
             self.clarificationQuestions = []
             self.currentTask = plan
             self.route = .plan
-            self.message = answer == nil ? "Skipped. A small first step is ready." : "Got it. A small first step is ready."
+            self.updatePlanningStatus(from: plan)
+            self.message = answer == nil ? "Skipped. \(self.planReadyMessage(for: plan))" : "Got it. \(self.planReadyMessage(for: plan))"
         }
     }
 
     func refinePlan(_ instruction: String) {
         guard let task = currentTask else { return }
         run {
-            self.currentTask = try await self.planningService.refinePlan(task, userInstruction: instruction)
-            self.message = "Plan updated."
+            let canUseRemoteAgent = await self.hasRemoteAgentCredentials()
+            self.message = canUseRemoteAgent ? "DeepSeek is revising the plan..." : "Revising with local fallback."
+            let context = try await self.agentContextForPlanning()
+            self.currentTask = try await self.planningService.refinePlan(task, userInstruction: instruction, agentContext: context)
+            if let currentTask = self.currentTask {
+                self.updatePlanningStatus(from: currentTask)
+                self.message = self.planUpdatedMessage(for: currentTask)
+            } else {
+                self.message = "Plan updated."
+            }
         }
     }
 
     func regeneratePlan() {
         guard let task = currentTask else { return }
         run {
+            let canUseRemoteAgent = await self.hasRemoteAgentCredentials()
+            self.message = canUseRemoteAgent ? "DeepSeek is regenerating the plan..." : "Regenerating with local fallback."
             let context = try await self.agentContextForPlanning()
             self.currentTask = try await self.planningService.regeneratePlan(task, agentContext: context)
-            self.message = "Plan regenerated with a fresh set of steps."
+            if let currentTask = self.currentTask {
+                self.updatePlanningStatus(from: currentTask)
+                self.message = "Plan regenerated. \(self.planReadyMessage(for: currentTask))"
+            } else {
+                self.message = "Plan regenerated with a fresh set of steps."
+            }
         }
     }
 
@@ -241,6 +260,22 @@ final class FocusFlowAppModel: ObservableObject {
         run {
             self.currentTask = try await self.planningService.updateStage(taskId: task.id, stageId: stage.id, patch: patch)
             self.message = "Stage updated."
+        }
+    }
+
+    func insertStage(before stage: StagePlan?, patch: StagePlanPatch) {
+        guard let task = currentTask else { return }
+        run {
+            self.currentTask = try await self.planningService.insertStage(taskId: task.id, beforeStageId: stage?.id, patch: patch)
+            self.message = stage == nil ? "Stage added at the end." : "Stage added before step \(stage?.order ?? 1)."
+        }
+    }
+
+    func deleteStage(_ stage: StagePlan) {
+        guard let task = currentTask else { return }
+        run {
+            self.currentTask = try await self.planningService.deleteStage(taskId: task.id, stageId: stage.id)
+            self.message = "Stage deleted."
         }
     }
 
@@ -1356,6 +1391,43 @@ final class FocusFlowAppModel: ObservableObject {
             )
         }
         return try await agentContextProvider.getContext(for: currentTask?.id, stageId: nil)
+    }
+
+    private func hasRemoteAgentCredentials() async -> Bool {
+        guard settings.remoteAgentEnabled else { return false }
+        if ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"]?.isEmpty == false {
+            return true
+        }
+        return await credentialStore.readDeepSeekAPIKey() != nil
+    }
+
+    private func updatePlanningStatus(from task: TaskPlan) {
+        let mode = task.metadata["planning_mode"] ?? "local_rules"
+        if mode == "deepseek_v4_flash" {
+            remoteAgentStatus = "DeepSeek v4 flash planned this task."
+        } else if let reason = task.metadata["agent_fallback_reason"], !reason.isEmpty {
+            remoteAgentStatus = "Local fallback planned this task. DeepSeek was unavailable."
+            message = "Local fallback used: \(reason)"
+        } else {
+            remoteAgentStatus = "Local fallback planned this task."
+        }
+    }
+
+    private func planReadyMessage(for task: TaskPlan) -> String {
+        if task.metadata["planning_mode"] == "deepseek_v4_flash" {
+            return "DeepSeek made a small first step."
+        }
+        return "A small first step is ready."
+    }
+
+    private func planUpdatedMessage(for task: TaskPlan) -> String {
+        if let response = task.metadata["agent_response"], !response.isEmpty {
+            return response
+        }
+        if task.metadata["planning_mode"] == "deepseek_v4_flash" {
+            return "DeepSeek revised the plan."
+        }
+        return "Plan updated with local fallback."
     }
 
     private func restoreLastSession() async {

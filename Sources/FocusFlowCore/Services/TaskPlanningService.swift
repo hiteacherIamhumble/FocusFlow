@@ -88,7 +88,28 @@ public struct TaskPlanningService: TaskPlanningServiceProtocol {
     }
 
     public func refinePlan(_ task: TaskPlan, userInstruction: String) async throws -> TaskPlan {
-        let refined = agent.refine(task, instruction: userInstruction)
+        try await refinePlan(task, userInstruction: userInstruction, agentContext: nil)
+    }
+
+    public func refinePlan(_ task: TaskPlan, userInstruction: String, agentContext: AgentContext?) async throws -> TaskPlan {
+        let privacyMode: PrivacyMode = agentContext?.privacyMode == .profileDisabled ? .profileDisabled : .remoteLLMAllowedForCurrentContext
+        let refined = try await agentRunLogger.run(
+            agentName: "TaskBreakdownAgent",
+            purpose: "refine_task_plan",
+            sourceModule: .module1TaskPlanning,
+            privacyMode: privacyMode,
+            outputSummary: { task in
+                "stages=\(task.stages.count); mode=\(task.metadata["planning_mode"] ?? "unknown"); refinement=\(task.metadata["last_refinement"] ?? "unknown")"
+            },
+            operation: {
+                await agent.refineUsingLLM(
+                    task,
+                    instruction: userInstruction,
+                    agentContext: agentContext,
+                    privacyMode: privacyMode
+                )
+            }
+        )
         try await repository.update(refined)
         await eventBus.publish(LearningEvent(
             eventType: .taskPlanUpdated,
@@ -99,44 +120,34 @@ public struct TaskPlanningService: TaskPlanningServiceProtocol {
             status: refined.status.rawValue,
             plannedDurationSeconds: refined.estimatedTotalSeconds,
             tags: [refined.taskType.rawValue],
-            metadata: ["instruction": userInstruction]
+            metadata: [
+                "instruction": userInstruction,
+                "planning_mode": refined.metadata["planning_mode"] ?? "unknown",
+                "agent_response": refined.metadata["agent_response"] ?? "",
+                "fallback_reason": refined.metadata["agent_fallback_reason"] ?? ""
+            ]
         ))
         return refined
     }
 
     public func regeneratePlan(_ task: TaskPlan, agentContext: AgentContext?) async throws -> TaskPlan {
-        let draft = try await createDraft(from: task.originalInput, agentContext: agentContext)
-        var regenerated = TaskPlan(
-            id: task.id,
-            originalInput: task.originalInput,
-            title: draft.task.title,
-            taskType: draft.task.taskType,
-            status: task.status,
-            createdAt: task.createdAt,
-            updatedAt: Date(),
-            deadline: task.deadline,
-            estimatedTotalSeconds: draft.task.estimatedTotalSeconds,
-            stages: draft.task.stages.enumerated().map { offset, stage in
-                StagePlan(
-                    taskId: task.id,
-                    order: offset + 1,
-                    title: stage.title,
-                    instruction: stage.instruction,
-                    completionCriteria: stage.completionCriteria,
-                    stageType: stage.stageType,
-                    estimatedSeconds: stage.estimatedSeconds,
-                    status: .idle,
-                    createdBy: .module1TaskPlanning,
-                    metadata: ["regenerated_from": stage.id]
-                )
+        let regenerated = try await agentRunLogger.run(
+            agentName: "TaskBreakdownAgent",
+            purpose: "regenerate_task_plan",
+            sourceModule: .module1TaskPlanning,
+            privacyMode: agentContext?.privacyMode == .profileDisabled ? .profileDisabled : .remoteLLMAllowedForCurrentContext,
+            outputSummary: { task in
+                "stages=\(task.stages.count); mode=\(task.metadata["planning_mode"] ?? "unknown")"
             },
-            metadata: task.metadata.merging([
-                "last_refinement": "regenerate",
-                "regenerated_at": ISO8601DateFormatter().string(from: Date()),
-                "planning_mode": draft.task.metadata["planning_mode"] ?? task.metadata["planning_mode"] ?? "local_rules"
-            ]) { _, new in new }
+            operation: {
+                await agent.refineUsingLLM(
+                    task,
+                    instruction: "regenerate",
+                    agentContext: agentContext,
+                    privacyMode: agentContext?.privacyMode == .profileDisabled ? .profileDisabled : .remoteLLMAllowedForCurrentContext
+                )
+            }
         )
-        regenerated.estimatedTotalSeconds = regenerated.stages.reduce(0) { $0 + $1.estimatedSeconds }
         try await repository.update(regenerated)
         await eventBus.publish(LearningEvent(
             eventType: .taskPlanUpdated,
@@ -149,8 +160,9 @@ public struct TaskPlanningService: TaskPlanningServiceProtocol {
             tags: [regenerated.taskType.rawValue],
             metadata: [
                 "instruction": "regenerate",
-                "confidence": String(format: "%.2f", draft.confidence),
-                "clarification_count": "\(draft.clarificationQuestions.count)"
+                "planning_mode": regenerated.metadata["planning_mode"] ?? "unknown",
+                "agent_response": regenerated.metadata["agent_response"] ?? "",
+                "fallback_reason": regenerated.metadata["agent_fallback_reason"] ?? ""
             ]
         ))
         return regenerated
@@ -183,6 +195,9 @@ public struct TaskPlanningService: TaskPlanningServiceProtocol {
 
         task.estimatedTotalSeconds = task.stages.reduce(0) { $0 + $1.estimatedSeconds }
         task.metadata["last_stage_edit_at"] = ISO8601DateFormatter().string(from: Date())
+        task.metadata["last_manual_edit"] = "edit_stage"
+        task.metadata.removeValue(forKey: "agent_response")
+        task.metadata.removeValue(forKey: "agent_fallback_reason")
         if task.stages.count > 15 {
             task.metadata["stage_count_warning"] = "true"
         } else {
@@ -211,6 +226,88 @@ public struct TaskPlanningService: TaskPlanningServiceProtocol {
         return task
     }
 
+    public func insertStage(taskId: String, beforeStageId: String?, patch: StagePlanPatch) async throws -> TaskPlan {
+        var task = try await repository.getTask(taskId)
+        let insertIndex: Int
+        if let beforeStageId, let index = task.stages.firstIndex(where: { $0.id == beforeStageId }) {
+            insertIndex = index
+        } else {
+            insertIndex = task.stages.count
+        }
+        let title = trimmedNonEmpty(patch.title) ?? "New learning step"
+        let instruction = trimmedNonEmpty(patch.instruction) ?? "Describe the next visible action."
+        let criteria = trimmedNonEmpty(patch.completionCriteria) ?? "The visible action is done."
+        let inserted = StagePlan(
+            taskId: task.id,
+            order: insertIndex + 1,
+            title: title,
+            instruction: instruction,
+            completionCriteria: criteria,
+            stageType: patch.stageType ?? .other,
+            estimatedSeconds: patch.estimatedSeconds ?? 300,
+            createdBy: .module1TaskPlanning,
+            metadata: ["manual_edit": "insert_stage"]
+        )
+        task.stages.insert(inserted, at: insertIndex)
+        normalizeStageOrderAndDuration(&task)
+        task.metadata["last_manual_edit"] = "insert_stage"
+        task.metadata.removeValue(forKey: "agent_response")
+        task.metadata.removeValue(forKey: "agent_fallback_reason")
+        try await repository.update(task)
+        await eventBus.publish(LearningEvent(
+            eventType: .taskPlanUpdated,
+            sourceModule: .module1TaskPlanning,
+            taskId: task.id,
+            stageId: inserted.id,
+            taskTitle: task.title,
+            taskType: task.taskType,
+            stageTitle: title,
+            stageType: inserted.stageType,
+            status: task.status.rawValue,
+            plannedDurationSeconds: task.estimatedTotalSeconds,
+            tags: ["plan_edit"],
+            metadata: [
+                "instruction": "manual_insert_stage",
+                "insert_before_stage_id": beforeStageId ?? ""
+            ]
+        ))
+        return task
+    }
+
+    public func deleteStage(taskId: String, stageId: String) async throws -> TaskPlan {
+        var task = try await repository.getTask(taskId)
+        guard task.stages.count > 1 else {
+            throw FocusFlowError.invalidState("Keep at least one stage in the plan.")
+        }
+        guard let index = task.stages.firstIndex(where: { $0.id == stageId }) else {
+            throw FocusFlowError.stageNotFound(stageId)
+        }
+        let removed = task.stages.remove(at: index)
+        normalizeStageOrderAndDuration(&task)
+        task.metadata["last_manual_edit"] = "delete_stage"
+        task.metadata.removeValue(forKey: "agent_response")
+        task.metadata.removeValue(forKey: "agent_fallback_reason")
+        try await repository.update(task)
+        await eventBus.publish(LearningEvent(
+            eventType: .taskPlanUpdated,
+            sourceModule: .module1TaskPlanning,
+            taskId: task.id,
+            stageId: removed.id,
+            taskTitle: task.title,
+            taskType: task.taskType,
+            stageTitle: removed.title,
+            stageType: removed.stageType,
+            status: task.status.rawValue,
+            plannedDurationSeconds: task.estimatedTotalSeconds,
+            tags: ["plan_edit"],
+            metadata: [
+                "instruction": "manual_delete_stage",
+                "deleted_stage_order": "\(removed.order)"
+            ]
+        ))
+        return task
+    }
+
     public func confirmPlan(_ task: TaskPlan) async throws {
         var confirmed = task
         confirmed.status = .planned
@@ -232,5 +329,24 @@ public struct TaskPlanningService: TaskPlanningServiceProtocol {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func normalizeStageOrderAndDuration(_ task: inout TaskPlan) {
+        task.stages = task.stages.enumerated().map { offset, stage in
+            var copy = stage
+            copy.order = offset + 1
+            copy.estimatedSeconds = min(1_500, max(offset == 0 ? 120 : 60, copy.estimatedSeconds))
+            if offset == 0 {
+                copy.estimatedSeconds = min(300, copy.estimatedSeconds)
+            }
+            return copy
+        }
+        task.estimatedTotalSeconds = task.stages.reduce(0) { $0 + $1.estimatedSeconds }
+        task.updatedAt = Date()
+        if task.stages.count > 15 {
+            task.metadata["stage_count_warning"] = "true"
+        } else {
+            task.metadata.removeValue(forKey: "stage_count_warning")
+        }
     }
 }

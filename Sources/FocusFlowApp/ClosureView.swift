@@ -9,20 +9,27 @@ struct ClosureView: View {
             VStack(alignment: .leading, spacing: 24) {
             if let summary = model.closureSummary {
                 Text(closureTitle(for: summary.closureType))
-                    .font(.system(size: 40, weight: .bold))
-                    .foregroundStyle(FFColors.ink)
+                    .font(AppFont.pageTitle)
+                    .foregroundStyle(AppColor.textPrimary)
 
                 Text(summary.encouragementText ?? summary.soothingText ?? "You can come back to this gently.")
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(FFColors.ink)
+                    .foregroundStyle(AppColor.textPrimary)
                     .padding(22)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(summary.closureType == .completed ? FFColors.mint.opacity(0.20) : FFColors.lavender, in: RoundedRectangle(cornerRadius: 8))
+                    .background(summary.closureType == .completed ? AppColor.success.opacity(0.20) : AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
 
-                HStack(spacing: 14) {
-                    MetricCard(title: "Focus time", value: summary.totalFocusSeconds.minutesText, tint: FFColors.blue)
-                    MetricCard(title: "Steps completed", value: "\(summary.completedStageCount)", tint: FFColors.mint)
-                    MetricCard(title: "Saved next", value: "\(summary.skippedStageCount + summary.abandonedStageCount)", tint: FFColors.peach)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 14) {
+                        MetricCard(title: "Focus time", value: summary.totalFocusSeconds.minutesText, tint: AppColor.actionPrimary)
+                        MetricCard(title: "Steps completed", value: "\(summary.completedStageCount)", tint: AppColor.success)
+                        MetricCard(title: "Saved next", value: "\(summary.skippedStageCount + summary.abandonedStageCount)", tint: AppColor.warning)
+                    }
+                    VStack(spacing: 14) {
+                        MetricCard(title: "Focus time", value: summary.totalFocusSeconds.minutesText, tint: AppColor.actionPrimary)
+                        MetricCard(title: "Steps completed", value: "\(summary.completedStageCount)", tint: AppColor.success)
+                        MetricCard(title: "Saved next", value: "\(summary.skippedStageCount + summary.abandonedStageCount)", tint: AppColor.warning)
+                    }
                 }
 
                 CompletionTimeline(task: model.currentTask, summary: summary)
@@ -33,18 +40,18 @@ struct ClosureView: View {
                     HStack {
                         Text("Light review")
                             .font(.headline)
-                            .foregroundStyle(FFColors.ink)
+                            .foregroundStyle(AppColor.textPrimary)
                         Spacer()
                         if model.reviewWasSkipped {
                             Label("Skipped", systemImage: "checkmark.circle")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(FFColors.softGray)
+                                .foregroundStyle(AppColor.textSecondary)
                         } else {
                             Button("Skip review") {
                                 model.skipClosureReview()
                             }
                             .buttonStyle(.plain)
-                            .foregroundStyle(FFColors.softGray)
+                            .foregroundStyle(AppColor.textSecondary)
                             .accessibilityIdentifier("skip_closure_review_button")
                         }
                     }
@@ -55,7 +62,7 @@ struct ClosureView: View {
                             disabled: model.reviewWasSkipped
                         )
                     }
-                    HStack {
+                    AdaptiveButtonRow {
                         TextField("One-line note", text: $model.closureReviewNote)
                             .textFieldStyle(.roundedBorder)
                             .accessibilityIdentifier("closure_review_note_field")
@@ -67,7 +74,7 @@ struct ClosureView: View {
                     }
                 }
 
-                HStack {
+                AdaptiveButtonRow {
                     Button("Start another task") {
                         model.archiveClosureAndStartNew()
                     }
@@ -114,7 +121,7 @@ struct CompletionTimeline: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Completion timeline")
                 .font(.headline)
-                .foregroundStyle(FFColors.ink)
+                .foregroundStyle(AppColor.textPrimary)
             ForEach((task?.stages.sorted(by: { $0.order < $1.order }) ?? []).prefix(20)) { stage in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: icon(for: stage.status))
@@ -123,20 +130,20 @@ struct CompletionTimeline: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(stage.title)
                             .font(.callout.weight(.semibold))
-                            .foregroundStyle(FFColors.ink)
+                            .foregroundStyle(AppColor.textPrimary)
                         Text("\(stage.status.rawValue) · \(stage.estimatedSeconds.minutesText)")
                             .font(.caption)
-                            .foregroundStyle(FFColors.softGray)
+                            .foregroundStyle(AppColor.textSecondary)
                     }
                     Spacer()
                 }
                 .padding(12)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
             }
             if !summary.keyBreakthroughs.isEmpty {
                 Text("Breakthroughs: \(summary.keyBreakthroughs.joined(separator: ", "))")
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(FFColors.mint)
+                    .foregroundStyle(AppColor.success)
             }
         }
     }
@@ -155,10 +162,10 @@ struct CompletionTimeline: View {
 
     private func color(for status: StageStatus) -> Color {
         switch status {
-        case .completed: FFColors.mint
-        case .skipped, .abandoned, .paused: FFColors.peach
-        case .running, .overtime: FFColors.blue
-        default: FFColors.softGray
+        case .completed: AppColor.success
+        case .skipped, .abandoned, .paused: AppColor.warning
+        case .running, .overtime: AppColor.actionPrimary
+        default: AppColor.textSecondary
         }
     }
 }
@@ -170,8 +177,8 @@ struct AbandonedClosureActions: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("What next?")
                 .font(.headline)
-                .foregroundStyle(FFColors.ink)
-            HStack {
+                .foregroundStyle(AppColor.textPrimary)
+            AdaptiveButtonRow {
                 Button("Save progress") {
                     model.archiveClosureAndOpenPersonalCenter()
                 }
@@ -193,11 +200,11 @@ struct AbandonedClosureActions: View {
                     model.archiveClosureAndStartNew()
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(FFColors.softGray)
+                .foregroundStyle(AppColor.textSecondary)
             }
         }
         .padding(18)
-        .background(FFColors.lavender, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -219,13 +226,13 @@ struct EmotionMarkingCard: View {
             HStack {
                 Text("How are you leaving this task?")
                     .font(.headline)
-                    .foregroundStyle(FFColors.ink)
+                    .foregroundStyle(AppColor.textPrimary)
                 Spacer()
                 Text("Optional")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(FFColors.softGray)
+                    .foregroundStyle(AppColor.textSecondary)
             }
-            HStack {
+            AdaptiveButtonRow {
                 ForEach(options, id: \.0) { emotion, title, icon in
                     Button {
                         model.markClosureEmotion(emotion)
@@ -237,14 +244,14 @@ struct EmotionMarkingCard: View {
                     .overlay {
                         if selectedEmotion == emotion {
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(FFColors.mint.opacity(0.78), lineWidth: 1)
+                                .stroke(AppColor.success.opacity(0.78), lineWidth: 1)
                         }
                     }
                 }
             }
         }
         .padding(18)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -257,14 +264,14 @@ struct ReviewItemRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: item.type == .highlight ? "checkmark.seal" : "lightbulb")
-                .foregroundStyle(item.type == .highlight ? FFColors.mint : FFColors.peach)
+                .foregroundStyle(item.type == .highlight ? AppColor.success : AppColor.warning)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 10) {
                 Text(item.text)
                     .font(.body)
-                    .foregroundStyle(FFColors.ink)
+                    .foregroundStyle(AppColor.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
+                AdaptiveButtonRow(spacing: 8) {
                     Button {
                         model.submitReviewResponse(item: item, confirmed: true)
                     } label: {
@@ -286,11 +293,11 @@ struct ReviewItemRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             if let response {
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(response ? FFColors.mint.opacity(0.70) : FFColors.peach.opacity(0.70), lineWidth: 1)
+                    .stroke(response ? AppColor.success.opacity(0.70) : AppColor.warning.opacity(0.70), lineWidth: 1)
             }
         }
     }

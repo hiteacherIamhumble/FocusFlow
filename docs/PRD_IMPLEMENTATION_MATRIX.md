@@ -9,10 +9,10 @@ This matrix maps the Chinese five-module PRD to the current native macOS impleme
 | Native macOS app, not Electron/Tauri | SwiftUI app target in `Sources/FocusFlowApp`, packaged by `Scripts/package_app.sh` into `dist/FocusFlow.app` | `Scripts/smoke_check.sh` validates build, bundle, signature, and plist |
 | Release artifact | `Scripts/release_app.sh` creates a verified DMG, SHA-256 checksum, optional Developer ID signing, optional notarization, and stapling | `Scripts/release_app.sh` plus `hdiutil verify` |
 | English product surface | User-facing SwiftUI copy is English across task input, plan preview, execution, closure, personal center, and settings | Manual app launch plus UI smoke launch check |
-| Light ADHD-friendly design | Calm light theme, compact navigation, restrained cards, progressive task flow, low-pressure feedback copy | Visual review through packaged app |
+| Light ADHD-friendly design | Adaptive semantic color tokens, compact navigation, restrained cards, progressive task flow, low-pressure feedback copy, responsive button/metric layouts, and VoiceOver-friendly labels | Visual review through packaged app plus SwiftUI token scan |
 | Runtime readiness | Settings includes a readiness dashboard for required and optional local/remote/native capabilities | `AppReadinessService` tests |
 | Readiness actions | Settings can open notification settings and test floating timer, voice, shortcuts, DeepSeek, export, profile reset, and data deletion confirmation | `Scripts/ui_smoke_settings.sh` launch smoke; strict click mode available |
-| Local encryption readiness | Settings exposes local encryption status and toggle; new installs and missing legacy fields default encryption on; task/runtime/module-five local files use AES-GCM with a Keychain-backed key when enabled | Encryption and readiness tests |
+| Secret storage readiness | DeepSeek API key is handled through Keychain or environment variables; ordinary local learning data does not require encrypted-at-rest storage for MVP | Settings and secret scan checks |
 | Local-first architecture | `FocusFlowCore` owns models, services, agents, storage, event bus; app layer binds native UI/adapters | Swift smoke test suite |
 | DeepSeek remote model path | `DeepSeekLLMClient` calls DeepSeek chat completions with model `deepseek-v4-flash`; gated by settings and API-key availability | Privacy-gated tests and app settings flow |
 
@@ -94,11 +94,11 @@ This matrix maps the Chinese five-module PRD to the current native macOS impleme
 | PRD Requirement | Implementation | Verification |
 | --- | --- | --- |
 | Local storage directory | `LocalDataDirectory`, supports default app data root plus test/launch overrides | Environment data-root test |
-| Encrypted task and runtime files | `LocalTaskRepository` and `LocalRuntimeStore` honor the local encryption toggle while still reading legacy plaintext files | `testTaskRepositoryEncryptsTaskFilesWhenEnabled`, `testRuntimeStoreEncryptsActiveRuntimeWhenEnabled` |
+| Task and runtime files | `LocalTaskRepository` and `LocalRuntimeStore` persist recoverable local files and keep compatibility with existing local data | Runtime recovery and repository tests |
 | Event JSONL storage | `DataCenterService` daily JSONL event files | Event storage tests |
 | Closure summary files | `summaries/` stores task closure summaries for later history/detail recovery | Closure summary persistence test |
 | Event write retry queue | Failed event writes are queued under `retry_queue/*.jsonl` and replayed with dedupe/audit events | `testRetryQueueCapturesFailedEventWritesAndReplaysWithoutDuplication` |
-| Local encrypted memory | When enabled, event, retry queue, profile, achievement, and closure summary files are encrypted at rest while exports still return user-readable JSON/CSV/Markdown | `testLocalDataCenterEncryptsEventsAndExportsPlainJSON` |
+| Local memory files | Event, retry queue, profile, achievement, and closure summary files stay local-first and export to user-readable JSON/CSV/Markdown | Data center export and history tests |
 | Responsive long local history | `DataCenterService` keeps an actor-local event cache while preserving JSONL as source of durable storage | Longitudinal 120-day regression test |
 | Privacy controls | Settings gate remote calls and profile learning | Privacy/profile gate tests |
 | ProfileAgent learning | Profile updates from feedback and task history, appending each learned snapshot to `profile/profile_snapshots.jsonl` | Profile tests |
@@ -115,7 +115,7 @@ This matrix maps the Chinese five-module PRD to the current native macOS impleme
 | --- | --- | --- |
 | Remote agent toggle | `SettingsView`, `SettingsService`, privacy-gated LLM client | Privacy-gated tests |
 | DeepSeek API key handling | Key is stored through native secure adapter when configured; not committed to repo | Smoke secret scan |
-| Local encryption toggle | `SettingsView`, `FocusFlowSettings`, `LocalEncryptionService`, `DataCenterService`, `TaskRepository`, and `RuntimeStore` apply encrypted-at-rest storage for local app files; default is on unless the user explicitly turns it off | Settings persistence, readiness, and encrypted storage tests |
+| Secret handling | API keys are never committed and are saved through native secure storage when configured; local learning files remain local-first without an MVP encryption requirement | Settings persistence and smoke secret scan |
 | Profile learning toggle/reset | Settings and data center profile reset | Profile gate/reset tests |
 | Notification, floating timer, voice, shortcuts | Settings-backed app controls | Settings and shortcut tests |
 | Per-shortcut conflict state | Each shortcut row shows ready/conflict and conflict risk can be recorded during shortcut testing | Settings UI |
@@ -149,10 +149,10 @@ This matrix maps the Chinese five-module PRD to the current native macOS impleme
 | --- | --- |
 | Functional acceptance | Covered by the passing Swift smoke test suite |
 | Cross-module acceptance | `testFiveModuleLearningLoopRunsEndToEnd` exercises modules 1 through 5 |
-| ADHD-friendly acceptance | UI flow is progressive, low-pressure, and avoids punitive language |
+| ADHD-friendly acceptance | UI flow is progressive, low-pressure, avoids punitive language, uses semantic color roles, does not rely on color alone, and respects Reduce Motion in animated stage-list transitions |
 | Performance acceptance | Local services are file-backed with actor-local event caching; 120 days of local events exercise stats, history, export, profile learning, and achievements | `testDataCenterHandlesLongitudinalLocalHistoryAtPrototypeScale` |
 | Privacy acceptance | Remote calls are opt-in, data is local-first, secret scan runs in smoke check |
-| UI launch acceptance | `Scripts/ui_smoke_check.sh` packages, launches, and verifies the main window |
+| UI launch acceptance | `Scripts/ui_smoke_check.sh` packages and launches the app in permission-light mode |
 | Strict UI click acceptance | `FOCUSFLOW_UI_STRICT_CLICK=1 Scripts/ui_smoke_check.sh` runs the primary task flow through Accessibility names or CGEvent fallback and verifies feedback event storage |
 | Supplemental UI coverage | `Scripts/ui_smoke_settings.sh`, `Scripts/ui_smoke_execution_controls.sh`, and `Scripts/ui_smoke_closure_history.sh` launch the app and support strict named-control clicks when macOS Accessibility exposes SwiftUI controls |
 | Release acceptance | `Scripts/release_app.sh` creates `dist/release/FocusFlow-<version>-build-<build>.dmg` and checksum |

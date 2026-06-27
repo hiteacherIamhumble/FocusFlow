@@ -149,6 +149,154 @@ final class FocusFlowCoreTests: XCTestCase {
         XCTAssertTrue(json.contains("\"instruction\":\"regenerate\"") || json.contains("\"instruction\" : \"regenerate\""))
     }
 
+    func testTaskPlanRefineUsesLLMAndRenumbersStages() async throws {
+        let directory = try temporaryDirectory()
+        let root = LocalDataDirectory(root: directory)
+        let dataCenter = LocalDataCenterService(directory: root)
+        let repository = LocalTaskRepository(directory: root)
+        let eventBus = AppEventBus(dataCenter: dataCenter)
+        let agent = TaskBreakdownAgent(llmClient: FakeLLMClient(response: """
+        {
+          "title": "Read one paper",
+          "task_type": "reading",
+          "agent_response": "I split the reading into smaller checkpoints.",
+          "stages": [
+            {
+              "title": "Open the PDF",
+              "instruction": "Open the paper and look at the title.",
+              "completion_criteria": "The paper is open.",
+              "stage_type": "startup",
+              "estimated_seconds": 180
+            },
+            {
+              "title": "Read the abstract",
+              "instruction": "Read only the abstract and write one note.",
+              "completion_criteria": "One abstract note exists.",
+              "stage_type": "reading",
+              "estimated_seconds": 420
+            },
+            {
+              "title": "Mark one next section",
+              "instruction": "Choose the next section to read.",
+              "completion_criteria": "One section is chosen.",
+              "stage_type": "organizing",
+              "estimated_seconds": 240
+            }
+          ]
+        }
+        """))
+        let service = TaskPlanningService(agent: agent, repository: repository, eventBus: eventBus)
+        let task = sampleTask()
+        try await repository.save(task)
+
+        let refined = try await service.refinePlan(task, userInstruction: "split smaller")
+        let stored = try await repository.getTask(task.id)
+        let json = try await dataCenter.exportEventsJSON()
+
+        XCTAssertEqual(refined.id, task.id)
+        XCTAssertEqual(stored.stages.map(\.order), [1, 2, 3])
+        XCTAssertEqual(refined.metadata["planning_mode"], "deepseek_v4_flash")
+        XCTAssertEqual(refined.metadata["agent_response"], "I split the reading into smaller checkpoints.")
+        XCTAssertTrue(json.contains("refine_task_plan"))
+        XCTAssertTrue(json.contains("deepseek_v4_flash"))
+    }
+
+    func testRepeatedLocalRefineKeepsStageOrderContiguous() async throws {
+        let directory = try temporaryDirectory()
+        let root = LocalDataDirectory(root: directory)
+        let dataCenter = LocalDataCenterService(directory: root)
+        let repository = LocalTaskRepository(directory: root)
+        let eventBus = AppEventBus(dataCenter: dataCenter)
+        let service = TaskPlanningService(repository: repository, eventBus: eventBus)
+        let task = sampleTask()
+        try await repository.save(task)
+
+        let splitOnce = try await service.refinePlan(task, userInstruction: "split smaller")
+        let splitTwice = try await service.refinePlan(splitOnce, userInstruction: "split smaller")
+        let reduced = try await service.refinePlan(splitTwice, userInstruction: "reduce steps")
+
+        XCTAssertEqual(splitOnce.stages.map(\.order), Array(1...splitOnce.stages.count))
+        XCTAssertEqual(splitTwice.stages.map(\.order), Array(1...splitTwice.stages.count))
+        XCTAssertEqual(reduced.stages.map(\.order), Array(1...reduced.stages.count))
+        XCTAssertEqual(reduced.metadata["planning_mode"], "local_rules")
+        XCTAssertNotNil(reduced.metadata["agent_response"])
+    }
+
+    func testManualInsertAndDeleteStageKeepsOrderWithoutAgentResponse() async throws {
+        let directory = try temporaryDirectory()
+        let root = LocalDataDirectory(root: directory)
+        let dataCenter = LocalDataCenterService(directory: root)
+        let repository = LocalTaskRepository(directory: root)
+        let eventBus = AppEventBus(dataCenter: dataCenter)
+        let service = TaskPlanningService(repository: repository, eventBus: eventBus)
+        var task = sampleTask()
+        task.metadata["agent_response"] = "Old AI response"
+        try await repository.save(task)
+
+        let inserted = try await service.insertStage(
+            taskId: task.id,
+            beforeStageId: task.stages[0].id,
+            patch: StagePlanPatch(
+                title: "Manual checkpoint",
+                instruction: "Write a checkpoint note.",
+                completionCriteria: "One checkpoint note exists.",
+                stageType: .organizing,
+                estimatedSeconds: 180
+            )
+        )
+        let insertedStage = try XCTUnwrap(inserted.stages.first(where: { $0.title == "Manual checkpoint" }))
+
+        XCTAssertEqual(inserted.stages.map(\.order), Array(1...inserted.stages.count))
+        XCTAssertEqual(inserted.metadata["last_manual_edit"], "insert_stage")
+        XCTAssertNil(inserted.metadata["agent_response"])
+
+        let deleted = try await service.deleteStage(taskId: task.id, stageId: insertedStage.id)
+        let json = try await dataCenter.exportEventsJSON()
+
+        XCTAssertEqual(deleted.stages.map(\.order), Array(1...deleted.stages.count))
+        XCTAssertFalse(deleted.stages.contains(where: { $0.id == insertedStage.id }))
+        XCTAssertEqual(deleted.metadata["last_manual_edit"], "delete_stage")
+        XCTAssertTrue(json.contains("manual_insert_stage"))
+        XCTAssertTrue(json.contains("manual_delete_stage"))
+    }
+
+    func testManualDeleteKeepsAtLeastOneStage() async throws {
+        let directory = try temporaryDirectory()
+        let root = LocalDataDirectory(root: directory)
+        let dataCenter = LocalDataCenterService(directory: root)
+        let repository = LocalTaskRepository(directory: root)
+        let eventBus = AppEventBus(dataCenter: dataCenter)
+        let service = TaskPlanningService(repository: repository, eventBus: eventBus)
+        let task = TaskPlan(
+            id: "task_single_stage",
+            originalInput: "Read one note for class",
+            title: "Read one note",
+            taskType: .reading,
+            estimatedTotalSeconds: 180,
+            stages: [
+                StagePlan(
+                    id: "stage_single",
+                    taskId: "task_single_stage",
+                    order: 1,
+                    title: "Open the note",
+                    instruction: "Open the note.",
+                    completionCriteria: "The note is open.",
+                    stageType: .startup,
+                    estimatedSeconds: 180
+                )
+            ]
+        )
+        try await repository.save(task)
+
+        do {
+            _ = try await service.deleteStage(taskId: task.id, stageId: "stage_single")
+            XCTFail("Expected deleting the only stage to fail.")
+        } catch FocusFlowError.invalidState {
+            let stored = try await repository.getTask(task.id)
+            XCTAssertEqual(stored.stages.count, 1)
+        }
+    }
+
     func testDataCenterWritesJsonlAndDeduplicatesEvents() async throws {
         let directory = try temporaryDirectory()
         let dataCenter = LocalDataCenterService(directory: LocalDataDirectory(root: directory))

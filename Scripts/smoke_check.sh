@@ -48,9 +48,8 @@ DMG_PATH="$(cat /tmp/focusflow_release_path.txt | tail -1)"
 hdiutil verify "$DMG_PATH" >/dev/null
 test -s "$DMG_PATH.sha256"
 
-SECRET_PATTERN='sk-'
-SECRET_SUFFIX='f5def'
-if rg -n "${SECRET_PATTERN}|${SECRET_SUFFIX}" . -g '!.git/*' -g '!.build/*' -g '!dist/*' -g '!Scripts/smoke_check.sh'; then
+SECRET_PATTERN='sk-[A-Za-z0-9_-]{16,}'
+if rg -n "$SECRET_PATTERN" . -g '!.git/*' -g '!.build/*' -g '!dist/*' -g '!Scripts/smoke_check.sh'; then
   echo "Secret-like DeepSeek key found in tracked workspace files." >&2
   exit 1
 fi

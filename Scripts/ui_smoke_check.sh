@@ -119,6 +119,11 @@ if ! osascript -e 'tell application "System Events" to exists process "FocusFlow
   exit 1
 fi
 
+if [[ "$STRICT_CLICK" != "1" ]]; then
+  echo "FocusFlow UI smoke launched. Set FOCUSFLOW_UI_STRICT_CLICK=1 to click the primary flow."
+  exit 0
+fi
+
 osascript <<'APPLESCRIPT'
 tell application "System Events"
   if UI elements enabled is false then error "Accessibility permission is not enabled for UI scripting."

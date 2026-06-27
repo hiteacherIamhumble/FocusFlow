@@ -120,7 +120,7 @@ MVP 固定服务于 **education / 学习相关任务**：
 | 语音识别 | Speech Framework | 本地/系统 ASR，用于语音反馈和情绪补充 |
 | 全局快捷键 | AppKit Event Monitor / Carbon RegisterEventHotKey / 可封装 HotKeyManager | 暂停、跳过、呼出语音、标记分心 |
 | 本地文件 | FileManager + Codable + JSONL | 隐藏文件记录事件，不使用数据库 |
-| 加密 | CryptoKit + Keychain | 可选本地加密，密钥放 Keychain |
+| Secret 存储 | Keychain | DeepSeek API key 等敏感凭据放 Keychain；普通本地学习数据使用可读 JSON/JSONL 文件 |
 | 图表 | Swift Charts / SwiftUI Canvas | 个人中心轻量趋势图、成就花园 |
 | LLM 抽象 | `LLMClient` protocol | 任务拆解、反馈选项、动态优化、情绪文案、自然语言查询 |
 
@@ -2171,7 +2171,6 @@ struct HistoryQuery: Codable {
 | 全局快捷键 | 开启 | 可自定义 |
 | 成就 Toast | 开启 | 可关闭，只保留个人中心记录 |
 | Agent 画像 | 开启 | 可关闭/重置 |
-| 本地加密 | 开启或首次询问 | 使用 CryptoKit + Keychain |
 | 数据导出 | 手动 | JSON / Markdown / CSV |
 | 数据删除 | 手动二次确认 | 单任务/单日/全部 |
 

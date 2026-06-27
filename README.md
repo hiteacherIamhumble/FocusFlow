@@ -17,7 +17,7 @@ The current codebase is a native Swift foundation with:
 - Actor-local event cache for responsive long-running local histories
 - Persistent settings under `.agent_data/settings/privacy.json`
 - DeepSeek key storage through macOS Keychain
-- Settings readiness dashboard for local storage, local encryption, DeepSeek, notifications, floating timer, shortcuts, and voice capability
+- Settings readiness dashboard for local storage, DeepSeek, notifications, floating timer, shortcuts, and voice capability
 - Rule-based local agents for task breakdown, feedback, plan optimization, emotion support, profile/statistics, and achievements
 - DeepSeek-compatible LLM client using `deepseek-v4-flash` for remote task planning, feedback options, stuck-help prompts, closure copy, and profile observations
 
@@ -25,6 +25,8 @@ The current codebase is a native Swift foundation with:
 
 - Original Chinese PRD: [`docs/prd/FocusFlow_ADHD_Educational_Agent_五模块统一产品需求文档.md`](docs/prd/FocusFlow_ADHD_Educational_Agent_%E4%BA%94%E6%A8%A1%E5%9D%97%E7%BB%9F%E4%B8%80%E4%BA%A7%E5%93%81%E9%9C%80%E6%B1%82%E6%96%87%E6%A1%A3.md)
 - Implementation matrix: [`docs/PRD_IMPLEMENTATION_MATRIX.md`](docs/PRD_IMPLEMENTATION_MATRIX.md)
+- AI audit and continuation prompt: [`docs/AI_PROGRESS_AUDIT_AND_CONTINUATION_PROMPT.md`](docs/AI_PROGRESS_AUDIT_AND_CONTINUATION_PROMPT.md)
+- Project frontend skill: [`.codex/skills/adhd-swiftui-frontend/SKILL.md`](.codex/skills/adhd-swiftui-frontend/SKILL.md)
 
 ## Requirements
 
@@ -80,7 +82,7 @@ For repeatable local tests or demos, launch with an isolated data root:
 swift run FocusFlow --focusflow-data-root /tmp/focusflow-demo-data
 ```
 
-Local encryption defaults on for new installs. API keys are stored in Keychain, not in local JSON files.
+API keys are stored in Keychain or provided through environment variables, not in local JSON files. Ordinary local learning data is kept local-first and user-exportable.
 
 ## Test
 
@@ -217,7 +219,6 @@ Implemented:
 - Personal center with three core metrics and ProfileAgent observations
 - Persistent privacy/focus settings
 - System readiness dashboard in Settings with required/optional capability status
-- Local encryption defaults on for new installs, covering task plans, runtime recovery, history, profile, achievement, retry queue, and closure memory files using AES-GCM plus a Keychain-backed key
 - Profile learning keeps both the latest profile and a local `profile_snapshots.jsonl` journal
 - DeepSeek API key save/clear/test from Settings via Keychain
 - One-command DeepSeek connectivity check for `deepseek-v4-flash`
@@ -234,6 +235,7 @@ Implemented:
 - Local `.app` bundle packaging script with Info.plist, entitlements, and ad-hoc signing
 - Release DMG script with optional Developer ID signing, hardened runtime, notarization, stapling, verification, and checksum output
 - Generated macOS app icon and status/achievement overlays
+- Adaptive ADHD-friendly SwiftUI design tokens, responsive controls, and VoiceOver-readable progress/status surfaces
 - One-command smoke check for tests, packaging, signing, plist validation, and secret scanning
 - Local data delete entry
 - Corrupt JSON quarantine and safe fallback for settings, runtime, tasks, profile, and achievements

@@ -1,3 +1,4 @@
+import AppKit
 import FocusFlowCore
 import SwiftUI
 
@@ -10,6 +11,10 @@ struct FocusFlowApp: App {
             RootView()
                 .environmentObject(model)
                 .frame(minWidth: 980, minHeight: 680)
+                .onAppear {
+                    NSApp.setActivationPolicy(.regular)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
         }
         .windowStyle(.titleBar)
     }

@@ -26,7 +26,15 @@ public struct TaskBreakdownAgent: Sendable {
             )
             return try decodeLLMDraft(content, request: request)
         } catch {
-            return (try? makeDraft(from: request)) ?? emptyDraft(for: request.rawInput, profile: request.userProfileSnapshot)
+            let fallback = (try? makeDraft(from: request)) ?? emptyDraft(for: request.rawInput, profile: request.userProfileSnapshot)
+            var task = fallback.task
+            task.metadata["planning_mode"] = "local_rules"
+            task.metadata["agent_fallback_reason"] = error.localizedDescription
+            return TaskPlanDraft(
+                task: task,
+                confidence: fallback.confidence,
+                clarificationQuestions: fallback.clarificationQuestions
+            )
         }
     }
 
@@ -64,6 +72,30 @@ public struct TaskBreakdownAgent: Sendable {
         if lower.contains("smaller") || lower.contains("split") || lower.contains("拆小") {
             refined.stages = splitLongestStage(in: refined)
             refined.metadata["last_refinement"] = "split_smaller"
+        } else if lower.contains("regenerate") {
+            if let draft = try? makeDraft(from: TaskInputRequest(
+                rawInput: task.originalInput,
+                userProfileSnapshot: nil,
+                agentContext: nil
+            )) {
+                refined.title = draft.task.title
+                refined.taskType = draft.task.taskType
+                refined.stages = draft.task.stages.enumerated().map { offset, stage in
+                    StagePlan(
+                        taskId: task.id,
+                        order: offset + 1,
+                        title: stage.title,
+                        instruction: stage.instruction,
+                        completionCriteria: stage.completionCriteria,
+                        stageType: stage.stageType,
+                        estimatedSeconds: stage.estimatedSeconds,
+                        status: .idle,
+                        createdBy: .module1TaskPlanning,
+                        metadata: ["regenerated_from": stage.id]
+                    )
+                }
+            }
+            refined.metadata["last_refinement"] = "regenerate"
         } else if lower.contains("shorter") || lower.contains("less") || lower.contains("减少") {
             refined.stages = Array(refined.stages.prefix(max(3, refined.stages.count - 1)))
             refined.metadata["last_refinement"] = "reduce_steps"
@@ -80,6 +112,31 @@ public struct TaskBreakdownAgent: Sendable {
         refined.estimatedTotalSeconds = refined.stages.reduce(0) { $0 + $1.estimatedSeconds }
         refined.updatedAt = Date()
         return refined
+    }
+
+    public func refineUsingLLM(
+        _ task: TaskPlan,
+        instruction: String,
+        agentContext: AgentContext?,
+        privacyMode: PrivacyMode = .remoteLLMAllowedForCurrentContext
+    ) async -> TaskPlan {
+        guard let llmClient else {
+            return normalized(refine(task, instruction: instruction), mode: "local_rules", fallbackReason: nil)
+        }
+        do {
+            let content = try await llmClient.complete(
+                messages: [
+                    LLMMessage(role: "system", content: taskRefinementSystemPrompt),
+                    LLMMessage(role: "user", content: taskRefinementUserPrompt(task: task, instruction: instruction, context: agentContext))
+                ],
+                privacyMode: privacyMode,
+                responseFormat: .jsonObject
+            )
+            return try decodeLLMRefinement(content, existingTask: task, instruction: instruction)
+        } catch {
+            let fallback = refine(task, instruction: instruction)
+            return normalized(fallback, mode: "local_rules", fallbackReason: error.localizedDescription)
+        }
     }
 
     private func emptyDraft(for input: String, profile: UserProfileSnapshot?) -> TaskPlanDraft {
@@ -127,6 +184,32 @@ public struct TaskBreakdownAgent: Sendable {
         """
     }
 
+    private var taskRefinementSystemPrompt: String {
+        """
+        You are FocusFlow's TaskBreakdownAgent revising an existing ADHD-friendly educational task plan.
+        Output ONLY valid JSON.
+        Preserve the user's learning goal and keep copy English, warm, direct, and low-pressure.
+        Follow the user adjustment exactly:
+        - split smaller: make one or more large/vague stages smaller and more concrete.
+        - reduce steps: remove or merge lower-value stages while preserving a tiny first step and a usable path.
+        - more time: add time to non-startup work without making any stage exceed 1500 seconds.
+        - regenerate: produce a fresh, coherent plan from the original goal and current context.
+        Return the complete revised plan, not a patch.
+        The first stage must remain 120-300 seconds. All later stages must be 60-1500 seconds.
+        Stage order is implied by array order and must be coherent.
+        Do not diagnose. Do not shame. Avoid words like lazy, failure, should, or must.
+        JSON schema:
+        {
+          "title": "string",
+          "task_type": "writing|reading|examReview|homework|presentation|longTermProject|unknown",
+          "agent_response": "short user-visible explanation of what changed",
+          "stages": [
+            {"title":"string","instruction":"string","completion_criteria":"string","stage_type":"startup","estimated_seconds":180}
+          ]
+        }
+        """
+    }
+
     private func taskPlanningUserPrompt(for request: TaskInputRequest) -> String {
         let context = request.agentContext
         let profile = context?.userProfileSnapshot ?? request.userProfileSnapshot
@@ -151,6 +234,38 @@ public struct TaskBreakdownAgent: Sendable {
         \(recentNotes.isEmpty ? "none" : "- \(recentNotes)")
 
         Return a plan with 4-8 stages unless the task is tiny. Keep all text English.
+        """
+    }
+
+    private func taskRefinementUserPrompt(task: TaskPlan, instruction: String, context: AgentContext?) -> String {
+        let stagesJSON = task.stages.sorted { $0.order < $1.order }.map { stage in
+            """
+            {"order":\(stage.order),"title":\(stage.title.jsonEscaped),"instruction":\(stage.instruction.jsonEscaped),"completion_criteria":\(stage.completionCriteria.jsonEscaped),"stage_type":\(stage.stageType.rawValue.jsonEscaped),"estimated_seconds":\(stage.estimatedSeconds),"status":\(stage.status.rawValue.jsonEscaped)}
+            """
+        }.joined(separator: ",")
+        let profile = context?.userProfileSnapshot
+        let stats = context?.recentStatsSummary
+        return """
+        User adjustment:
+        \(instruction)
+
+        Original learning input:
+        \(task.originalInput)
+
+        Current task:
+        {"title":\(task.title.jsonEscaped),"task_type":\(task.taskType.rawValue.jsonEscaped),"estimated_total_seconds":\(task.estimatedTotalSeconds),"stages":[\(stagesJSON)]}
+
+        Privacy-filtered profile:
+        preferred_stage_duration_seconds=\(profile?.preferredStageDurationSeconds.map(String.init) ?? "unknown")
+        recommended_first_stage_seconds=\(profile?.recommendedFirstStageSeconds.map(String.init) ?? "180")
+        difficult_stage_types=\((profile?.difficultStageTypes ?? []).map(\.rawValue).joined(separator: ","))
+
+        Recent local stats:
+        active_days=\(stats?.activeDays.description ?? "unknown")
+        completed_stage_count=\(stats?.completedStageCount.description ?? "unknown")
+        total_focus_seconds=\(stats?.totalFocusSeconds.description ?? "unknown")
+
+        Return a complete revised plan with 3-8 stages unless the task truly needs fewer.
         """
     }
 
@@ -200,6 +315,50 @@ public struct TaskBreakdownAgent: Sendable {
             )
         }
         return TaskPlanDraft(task: task, confidence: min(1, max(0, decoded.confidence)), clarificationQuestions: Array(questions))
+    }
+
+    private func decodeLLMRefinement(_ content: String, existingTask: TaskPlan, instruction: String) throws -> TaskPlan {
+        let data = Data(content.utf8)
+        let decoded = try FocusFlowJSON.decoder.decode(LLMTaskPlanRefinement.self, from: data)
+        let taskType = EducationTaskType(rawValue: decoded.taskType) ?? existingTask.taskType
+        var stages = decoded.stages.enumerated().map { index, stage in
+            StagePlan(
+                taskId: existingTask.id,
+                order: index + 1,
+                title: stage.title.cleanAgentText(fallback: "Small learning step"),
+                instruction: stage.instruction.cleanAgentText(fallback: "Do one visible part of this step."),
+                completionCriteria: stage.completionCriteria.cleanAgentText(fallback: "One visible part is done."),
+                stageType: StageType(rawValue: stage.stageType) ?? .other,
+                estimatedSeconds: min(1_500, max(index == 0 ? 120 : 60, stage.estimatedSeconds)),
+                status: .idle,
+                createdBy: .module1TaskPlanning,
+                metadata: ["refined_by": "deepseek_v4_flash"]
+            )
+        }
+        guard !stages.isEmpty else {
+            throw FocusFlowError.invalidState("DeepSeek returned an empty revised plan.")
+        }
+        stages[0].estimatedSeconds = min(300, max(120, stages[0].estimatedSeconds))
+        var refined = TaskPlan(
+            id: existingTask.id,
+            originalInput: existingTask.originalInput,
+            title: decoded.title.cleanAgentText(fallback: existingTask.title),
+            taskType: taskType,
+            status: existingTask.status,
+            createdAt: existingTask.createdAt,
+            updatedAt: Date(),
+            deadline: existingTask.deadline,
+            estimatedTotalSeconds: stages.reduce(0) { $0 + $1.estimatedSeconds },
+            stages: stages,
+            metadata: existingTask.metadata.merging([
+                "last_refinement": refinementKind(for: instruction),
+                "planning_mode": "deepseek_v4_flash",
+                "agent_response": decoded.agentResponse.cleanAgentText(fallback: "I revised the plan into smaller, clearer steps."),
+                "refined_at": ISO8601DateFormatter().string(from: Date())
+            ]) { _, new in new }
+        )
+        refined = normalized(refined, mode: "deepseek_v4_flash", fallbackReason: nil)
+        return refined
     }
 
     private func classify(_ input: String) -> EducationTaskType {
@@ -354,6 +513,56 @@ public struct TaskBreakdownAgent: Sendable {
             return copy
         }
     }
+
+    private func normalized(_ task: TaskPlan, mode: String, fallbackReason: String?) -> TaskPlan {
+        var copy = task
+        copy.stages = copy.stages.enumerated().map { offset, stage in
+            var stageCopy = stage
+            stageCopy.order = offset + 1
+            stageCopy.estimatedSeconds = min(1_500, max(offset == 0 ? 120 : 60, stageCopy.estimatedSeconds))
+            if offset == 0 {
+                stageCopy.estimatedSeconds = min(300, stageCopy.estimatedSeconds)
+            }
+            return stageCopy
+        }
+        copy.estimatedTotalSeconds = copy.stages.reduce(0) { $0 + $1.estimatedSeconds }
+        copy.updatedAt = Date()
+        copy.metadata["planning_mode"] = mode
+        copy.metadata["refined_at"] = ISO8601DateFormatter().string(from: Date())
+        copy.metadata["agent_response"] = mode == "deepseek_v4_flash"
+            ? (copy.metadata["agent_response"] ?? "I revised the plan into smaller, clearer steps.")
+            : fallbackAgentResponse(for: copy.metadata["last_refinement"])
+        if let fallbackReason {
+            copy.metadata["agent_fallback_reason"] = fallbackReason
+        } else {
+            copy.metadata.removeValue(forKey: "agent_fallback_reason")
+        }
+        return copy
+    }
+
+    private func refinementKind(for instruction: String) -> String {
+        let lower = instruction.lowercased()
+        if lower.contains("regenerate") { return "regenerate" }
+        if lower.contains("smaller") || lower.contains("split") || lower.contains("拆小") { return "split_smaller" }
+        if lower.contains("shorter") || lower.contains("less") || lower.contains("reduce") || lower.contains("减少") { return "reduce_steps" }
+        if lower.contains("more time") || lower.contains("longer") || lower.contains("时间") { return "extend_time" }
+        return "agent_refine"
+    }
+
+    private func fallbackAgentResponse(for refinement: String?) -> String {
+        switch refinement {
+        case "split_smaller":
+            return "I split the largest step and renumbered the plan."
+        case "reduce_steps":
+            return "I reduced the plan to the most useful next steps."
+        case "extend_time":
+            return "I added time to the work steps while keeping the first step small."
+        case "regenerate":
+            return "I regenerated the plan with a fresh local fallback."
+        default:
+            return "I revised the plan locally."
+        }
+    }
 }
 
 private extension String {
@@ -368,6 +577,14 @@ private extension String {
         guard !trimmed.isEmpty else { return fallback }
         guard !banned.contains(where: { trimmed.lowercased().contains($0) }) else { return fallback }
         return trimmed
+    }
+
+    var jsonEscaped: String {
+        if let data = try? JSONEncoder().encode(self),
+           let value = String(data: data, encoding: .utf8) {
+            return value
+        }
+        return "\"\""
     }
 }
 
@@ -391,4 +608,11 @@ private struct LLMStage: Decodable {
     let completionCriteria: String
     let stageType: String
     let estimatedSeconds: Int
+}
+
+private struct LLMTaskPlanRefinement: Decodable {
+    let title: String
+    let taskType: String
+    let agentResponse: String
+    let stages: [LLMStage]
 }
