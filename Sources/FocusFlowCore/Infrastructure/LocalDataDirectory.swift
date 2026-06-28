@@ -41,8 +41,10 @@ public struct LocalDataDirectory: Sendable {
     public var export: URL { root.appendingPathComponent("export", isDirectory: true) }
     public var retryQueue: URL { root.appendingPathComponent("retry_queue", isDirectory: true) }
 
+    public var attachments: URL { root.appendingPathComponent("attachments", isDirectory: true) }
+
     public func prepare() throws {
-        for directory in [root, events, tasks, runtime, summaries, profile, achievements, settings, export, retryQueue] {
+        for directory in [root, events, tasks, runtime, summaries, profile, achievements, settings, export, retryQueue, attachments] {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
     }

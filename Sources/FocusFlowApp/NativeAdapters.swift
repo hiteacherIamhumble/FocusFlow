@@ -9,33 +9,31 @@ final class FloatingTimerWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var onFrameChanged: ((NSRect) -> Void)?
 
+    private let defaultSize = NSSize(width: 540, height: 680)
+    private let minSize = NSSize(width: 420, height: 480)
+
     func show(
-        stageTitle: String,
-        remainingSeconds: Int,
-        opacity: Double,
+        model: FocusFlowAppModel,
         savedOrigin: CGPoint?,
-        onFrameChanged: @escaping (NSRect) -> Void,
-        onDifficulty: @escaping () -> Void,
-        onExtend: @escaping () -> Void,
-        onComplete: @escaping () -> Void
+        onFrameChanged: @escaping (NSRect) -> Void
     ) {
         self.onFrameChanged = onFrameChanged
-        let view = FloatingTimerPanel(
-            stageTitle: stageTitle,
-            remainingSeconds: remainingSeconds,
-            opacity: opacity,
-            onDifficulty: onDifficulty,
-            onExtend: onExtend,
-            onComplete: onComplete
-        )
+
         if window == nil {
-            let hosting = NSHostingController(rootView: view)
+            let hosting = NSHostingController(
+                rootView: FloatingExecutionPanel()
+                    .environmentObject(model)
+            )
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 280, height: 150),
-                styleMask: [.borderless, .nonactivatingPanel],
+                contentRect: NSRect(origin: .zero, size: defaultSize),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView, .nonactivatingPanel],
                 backing: .buffered,
                 defer: false
             )
+            panel.title = "FocusFlow"
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.isMovableByWindowBackground = true
             panel.contentViewController = hosting
             panel.isFloatingPanel = true
             panel.level = .floating
@@ -43,63 +41,49 @@ final class FloatingTimerWindowController: NSObject, NSWindowDelegate {
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = true
-            panel.isMovableByWindowBackground = true
+            panel.minSize = minSize
             panel.delegate = self
             if let savedOrigin {
-                panel.setFrameOrigin(savedOrigin)
+                panel.setFrame(NSRect(origin: savedOrigin, size: defaultSize), display: false)
             } else {
                 panel.center()
             }
-            panel.makeKeyAndOrderFront(nil)
             window = panel
-        } else if let hosting = window?.contentViewController as? NSHostingController<FloatingTimerPanel> {
-            hosting.rootView = view
-            window?.orderFrontRegardless()
         }
+
+        guard window?.isVisible != true else { return }
+        window?.orderFrontRegardless()
     }
 
     func hide() {
         window?.orderOut(nil)
     }
 
+    func bringToFront() {
+        window?.makeKeyAndOrderFront(nil)
+    }
+
     func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        onFrameChanged?(window.frame)
+    }
+
+    func windowDidResize(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         onFrameChanged?(window.frame)
     }
 }
 
-struct FloatingTimerPanel: View {
-    let stageTitle: String
-    let remainingSeconds: Int
-    let opacity: Double
-    let onDifficulty: () -> Void
-    let onExtend: () -> Void
-    let onComplete: () -> Void
+struct FloatingExecutionPanel: View {
+    @EnvironmentObject private var model: FocusFlowAppModel
 
     var body: some View {
-        VStack(spacing: 10) {
-            Text(stageTitle)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(AppColor.textSecondary)
-                .lineLimit(1)
-            Text(String(format: "%02d:%02d", max(0, remainingSeconds) / 60, max(0, remainingSeconds) % 60))
-                .font(.system(.title, design: .rounded).weight(.bold))
-                .monospacedDigit()
-                .foregroundStyle(AppColor.actionPrimary)
-            AdaptiveButtonRow(spacing: 8) {
-                Button("I'm stuck", action: onDifficulty)
-                    .buttonStyle(SecondaryButtonStyle())
-                Button("+5", action: onExtend)
-                    .buttonStyle(SecondaryButtonStyle())
-                Button("Done", action: onComplete)
-                    .buttonStyle(PrimaryButtonStyle())
-            }
-        }
-        .padding(14)
-        .frame(width: 280, height: 150)
-        .background(AppColor.surfaceCard.opacity(min(1, max(0.35, opacity))), in: RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(stageTitle). \(max(0, remainingSeconds) / 60) minutes \(max(0, remainingSeconds) % 60) seconds remaining.")
+        ExecutionWorkspaceView()
+            .background(
+                AppColor.bgBase.opacity(min(1, max(0.35, model.settings.floatingTimerOpacity)))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.borderSubtle.opacity(0.5)))
     }
 }
 

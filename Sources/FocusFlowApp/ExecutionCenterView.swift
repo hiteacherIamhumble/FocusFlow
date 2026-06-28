@@ -3,6 +3,19 @@ import SwiftUI
 
 struct ExecutionCenterView: View {
     @EnvironmentObject private var model: FocusFlowAppModel
+
+    var body: some View {
+        if model.currentTask == nil {
+            EmptyExecutionView()
+        } else {
+            ExecutionCompanionView()
+        }
+    }
+}
+
+/// Full execution UI: stage card, controls, banners, overlays. Lives in the floating window.
+struct ExecutionWorkspaceView: View {
+    @EnvironmentObject private var model: FocusFlowAppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var stageListExpanded = false
 
@@ -19,211 +32,343 @@ struct ExecutionCenterView: View {
         }
     }
 
-    private var isCollectingFeedback: Bool {
-        !model.feedbackOptions.isEmpty
+    private var overlayActive: Bool {
+        model.interventionPanelVisible
+            || !model.feedbackOptions.isEmpty
+            || model.pendingStageUpdate != nil
+            || model.postFeedbackMessage != nil
+            || model.timeoutDifficultyPrompt != nil
+            || model.stuckHelp != nil
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+        ZStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if let task = model.currentTask, let stage = currentStage {
+                        stageHeader(task: task, stage: stage)
+                        focusCard(stage: stage)
+                        ambientBanners
+                        stageListSection(task: task)
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .blur(radius: overlayActive ? 2 : 0)
+            .disabled(overlayActive)
+
+            if overlayActive {
+                gentleOverlay
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: overlayActive)
+    }
+}
+
+struct ExecutionCompanionView: View {
+    @EnvironmentObject private var model: FocusFlowAppModel
+
+    private var currentStage: StagePlan? {
+        model.currentTask?.stages.sorted(by: { $0.order < $1.order }).first {
+            $0.status == .running || $0.status == .paused || $0.status == .overtime
+        } ?? model.currentTask?.stages.sorted(by: { $0.order < $1.order }).first {
+            $0.status == .idle || $0.status == .adjusted
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 16) {
+                Image(systemName: "macwindow.on.rectangle")
+                    .font(.system(size: 36))
+                    .foregroundStyle(AppColor.actionPrimary)
+
+                Text("Your focus session lives in the floating window")
+                    .font(AppFont.pageTitle)
+                    .foregroundStyle(AppColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Drag it anywhere while you work in other apps. Stuck help, feedback, and timers all stay there.")
+                    .font(.title3)
+                    .foregroundStyle(AppColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 if let task = model.currentTask, let stage = currentStage {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(task.title)
-                            .font(AppFont.pageTitle)
-                            .foregroundStyle(AppColor.textPrimary)
-                        Text("Stage \(stage.order) of \(task.stages.count)")
-                            .font(.title3)
-                            .foregroundStyle(AppColor.textSecondary)
-                    }
-
-                    HStack(alignment: .top, spacing: 20) {
-                        VStack(alignment: .leading, spacing: 18) {
-                            Text(stage.title)
-                                .font(.title.weight(.bold))
-                                .foregroundStyle(AppColor.textPrimary)
-                            Text(stage.instruction)
-                                .font(.title3)
-                                .foregroundStyle(AppColor.textPrimary)
-                            Text("Stop when: \(stage.completionCriteria)")
-                                .font(.callout.weight(.medium))
-                                .foregroundStyle(AppColor.textSecondary)
-
-                            TimerReadout(seconds: model.remainingSeconds ?? stage.estimatedSeconds)
-
-                            if isCollectingFeedback {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "checkmark.seal.fill")
-                                        .foregroundStyle(AppColor.success)
-                                    Text("Step saved. Answer the quick check-in below before moving on.")
-                                        .font(.headline)
-                                        .foregroundStyle(AppColor.textPrimary)
-                                }
-                                .padding(14)
-                                .background(AppColor.success.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
-                            } else {
-                                AdaptiveButtonRow {
-                                    Button {
-                                        if stage.status == .running || stage.status == .paused || stage.status == .overtime {
-                                            model.pauseOrResume()
-                                        } else {
-                                            model.startNextStage()
-                                        }
-                                    } label: {
-                                        Label(stage.status == .paused ? "Continue" : stage.status == .running ? "Pause" : "Start", systemImage: stage.status == .paused ? "play.fill" : "pause.fill")
-                                    }
-                                    .buttonStyle(SecondaryButtonStyle())
-                                    .accessibilityIdentifier("stage_pause_resume_button")
-
-                                    Button {
-                                        model.completeStage()
-                                    } label: {
-                                        Label("I finished this step", systemImage: "checkmark.circle.fill")
-                                    }
-                                    .buttonStyle(PrimaryButtonStyle())
-                                    .accessibilityIdentifier("stage_complete_button")
-
-                                    Button {
-                                        model.requestStuckHelp()
-                                    } label: {
-                                        Label("I'm stuck", systemImage: "lifepreserver")
-                                    }
-                                    .buttonStyle(SecondaryButtonStyle())
-                                    .accessibilityIdentifier("stage_stuck_button")
-
-                                    Button {
-                                        model.extendCurrentStageByFiveMinutes()
-                                    } label: {
-                                        Label("+5 min", systemImage: "plus.circle")
-                                    }
-                                    .buttonStyle(SecondaryButtonStyle())
-                                    .accessibilityIdentifier("extend_stage_button")
-                                }
-                            }
-
-                            if !isCollectingFeedback {
-                                AdaptiveButtonRow {
-                                    Button("Skip for now") { model.skipStage() }
-                                        .buttonStyle(SecondaryButtonStyle())
-                                        .accessibilityIdentifier("stage_skip_button")
-                                    Button("Pause task gently") { model.abandonTaskGracefully() }
-                                        .buttonStyle(SecondaryButtonStyle())
-                                        .accessibilityIdentifier("pause_task_gently_button")
-                                    Button("Complete task now") { model.completeTaskNow() }
-                                        .buttonStyle(SecondaryButtonStyle())
-                                        .accessibilityIdentifier("complete_task_now_button")
-                                    Button("End task") { model.abandonCurrentTask(reason: "You chose to end this task from the execution center.") }
-                                        .buttonStyle(.plain)
-                                        .foregroundStyle(AppColor.textSecondary)
-                                        .accessibilityIdentifier("end_task_button")
-                                }
-                            }
-                        }
-                        .padding(24)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
-
-                        FloatingCapsulePreview(stage: stage, seconds: model.remainingSeconds ?? stage.estimatedSeconds)
-                            .frame(width: 250)
-                    }
-
-                    if let stuck = model.stuckHelp {
-                        StuckHelpCard(response: stuck)
-                    }
-
-                    if let fallback = model.notificationFallbackMessage {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: "bell.slash")
-                                .foregroundStyle(AppColor.warning)
-                            Text(fallback)
-                                .font(.callout.weight(.medium))
-                                .foregroundStyle(AppColor.textPrimary)
-                            Spacer()
-                        }
-                        .padding(16)
-                        .background(AppColor.warning.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
-                    }
-
-                    if model.interventionPanelVisible {
-                        InterventionPanel()
-                    }
-
-                    if let breakRemaining = model.breakRemainingSeconds, breakRemaining > 0 {
-                        HStack {
-                            Image(systemName: "cup.and.saucer")
-                                .foregroundStyle(AppColor.warning)
-                            Text("Break")
-                                .font(.headline)
-                                .foregroundStyle(AppColor.textPrimary)
-                            Spacer()
-                            Text(String(format: "%02d:%02d", breakRemaining / 60, breakRemaining % 60))
-                                .font(.system(.title3, design: .rounded).weight(.bold))
-                                .monospacedDigit()
-                                .foregroundStyle(AppColor.actionPrimary)
-                        }
-                        .padding(18)
-                        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
-                    }
-
-                    if !model.feedbackOptions.isEmpty {
-                        FeedbackSheet(options: model.feedbackOptions)
-                    }
-
-                    if let pendingUpdate = model.pendingStageUpdate {
-                        PlanAdjustmentPreviewCard(update: pendingUpdate)
-                    }
-
-                    if let postFeedbackMessage = model.postFeedbackMessage {
-                        PostFeedbackCard(message: postFeedbackMessage)
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        Button {
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
-                                stageListExpanded.toggle()
-                            }
-                        } label: {
-                            HStack {
-                                Label("Stage list", systemImage: stageListExpanded ? "chevron.down.circle" : "chevron.right.circle")
-                                    .font(.headline)
-                                Spacer()
-                                Text("\(task.stages.count) stages")
-                                    .font(.caption.weight(.semibold))
-                            }
-                        }
-                        .buttonStyle(.plain)
+                    Text("\(task.title) · Stage \(stage.order) of \(task.stages.count)")
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(AppColor.textPrimary)
-                        .accessibilityIdentifier("toggle_stage_list_button")
+                }
 
-                        if stageListExpanded {
-                            ForEach(task.stages.sorted(by: { $0.order < $1.order })) { item in
-                                HStack {
-                                    Image(systemName: icon(for: item.status))
-                                        .foregroundStyle(color(for: item.status))
-                                        .frame(width: 24)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.title)
-                                            .font(.callout.weight(.semibold))
-                                            .foregroundStyle(AppColor.textPrimary)
-                                        Text(item.estimatedSeconds.minutesText)
-                                            .font(.caption)
-                                            .foregroundStyle(AppColor.textSecondary)
-                                    }
-                                    Spacer()
-                                    Text(item.status.rawValue)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(AppColor.textSecondary)
-                                }
-                                .padding(12)
-                                .background(AppColor.surfaceCard.opacity(0.82), in: RoundedRectangle(cornerRadius: 8))
-                            }
-                        }
+                Button {
+                    model.bringFloatingWindowToFront()
+                } label: {
+                    Label("Bring floating window to front", systemImage: "arrow.up.forward.app")
+                        .frame(maxWidth: 320)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .accessibilityIdentifier("bring_floating_window_button")
+            }
+            .padding(32)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppColor.borderSubtle.opacity(0.6)))
+
+            Spacer(minLength: 0)
+        }
+        .padding(42)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+}
+
+private extension ExecutionWorkspaceView {
+
+    private func stageHeader(task: TaskPlan, stage: StagePlan) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(task.title)
+                .font(AppFont.pageTitle)
+                .foregroundStyle(AppColor.textPrimary)
+            Text("Stage \(stage.order) of \(task.stages.count)")
+                .font(.title3)
+                .foregroundStyle(AppColor.textSecondary)
+        }
+    }
+
+    private func focusCard(stage: StagePlan) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text(stage.title)
+                .font(.title.weight(.bold))
+                .foregroundStyle(AppColor.textPrimary)
+            Text(stage.instruction)
+                .font(.title3)
+                .foregroundStyle(AppColor.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Stop when: \(stage.completionCriteria)")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(AppColor.textSecondary)
+
+            TimerReadout(seconds: model.remainingSeconds ?? stage.estimatedSeconds)
+
+            primaryAction(stage: stage)
+            secondaryActionRow(stage: stage)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppColor.borderSubtle.opacity(0.6)))
+    }
+
+    @ViewBuilder
+    private func primaryAction(stage: StagePlan) -> some View {
+        let isRunning = stage.status == .running || stage.status == .paused || stage.status == .overtime
+        if isRunning {
+            Button {
+                model.completeStage()
+            } label: {
+                Label("I finished this step", systemImage: "checkmark.circle.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .accessibilityIdentifier("stage_complete_button")
+        } else {
+            Button {
+                model.startNextStage()
+            } label: {
+                Label("Start this step", systemImage: "play.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .accessibilityIdentifier("stage_start_button")
+        }
+    }
+
+    @ViewBuilder
+    private func secondaryActionRow(stage: StagePlan) -> some View {
+        let isRunning = stage.status == .running || stage.status == .paused || stage.status == .overtime
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if isRunning {
+                    executionControlButton(
+                        title: stage.status == .paused ? "Continue" : "Pause",
+                        systemImage: stage.status == .paused ? "play.fill" : "pause.fill",
+                        accessibilityIdentifier: "stage_pause_resume_button"
+                    ) {
+                        model.pauseOrResume()
                     }
-                } else {
-                    EmptyExecutionView()
+                }
+
+                executionControlButton(
+                    title: "+5",
+                    systemImage: "plus.circle",
+                    accessibilityIdentifier: "extend_stage_button"
+                ) {
+                    model.extendCurrentStageByFiveMinutes()
+                }
+
+                executionControlButton(
+                    title: "Stuck",
+                    systemImage: "lifepreserver",
+                    accessibilityIdentifier: "stage_stuck_button"
+                ) {
+                    model.requestStuckHelp()
+                }
+
+                executionControlButton(
+                    title: "Skip",
+                    systemImage: "forward",
+                    accessibilityIdentifier: "stage_skip_button"
+                ) {
+                    model.skipStage()
+                }
+
+                Menu {
+                    Button("Pause task gently") { model.abandonTaskGracefully() }
+                        .accessibilityIdentifier("pause_task_gently_button")
+                    Button("Complete task now") { model.completeTaskNow() }
+                        .accessibilityIdentifier("complete_task_now_button")
+                    Button("End task", role: .destructive) {
+                        model.abandonCurrentTask(reason: "You chose to end this task from the execution center.")
+                    }
+                    .accessibilityIdentifier("end_task_button")
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                        .labelStyle(.titleAndIcon)
+                }
+                .menuStyle(.borderlessButton)
+                .buttonStyle(CompactSecondaryButtonStyle())
+                .fixedSize()
+                .accessibilityIdentifier("execution_more_menu")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func executionControlButton(
+        title: String,
+        systemImage: String,
+        accessibilityIdentifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .buttonStyle(CompactSecondaryButtonStyle())
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+
+    @ViewBuilder
+    private var ambientBanners: some View {
+        if let fallback = model.notificationFallbackMessage {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "bell.slash")
+                    .foregroundStyle(AppColor.warning)
+                Text(fallback)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(AppColor.textPrimary)
+                Spacer()
+            }
+            .padding(16)
+            .background(AppColor.warning.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
+        }
+
+        if let breakRemaining = model.breakRemainingSeconds, breakRemaining > 0 {
+            HStack {
+                Image(systemName: "cup.and.saucer")
+                    .foregroundStyle(AppColor.warning)
+                Text("Break")
+                    .font(.headline)
+                    .foregroundStyle(AppColor.textPrimary)
+                Spacer()
+                Text(String(format: "%02d:%02d", breakRemaining / 60, breakRemaining % 60))
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(AppColor.actionPrimary)
+            }
+            .padding(18)
+            .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private func stageListSection(task: TaskPlan) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                    stageListExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Label("Stage list", systemImage: stageListExpanded ? "chevron.down.circle" : "chevron.right.circle")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(task.stages.count) stages")
+                        .font(.caption.weight(.semibold))
                 }
             }
-            .padding(42)
+            .buttonStyle(.plain)
+            .foregroundStyle(AppColor.textPrimary)
+            .accessibilityIdentifier("toggle_stage_list_button")
+
+            if stageListExpanded {
+                ForEach(task.stages.sorted(by: { $0.order < $1.order })) { item in
+                    HStack {
+                        Image(systemName: icon(for: item.status))
+                            .foregroundStyle(color(for: item.status))
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.title)
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(AppColor.textPrimary)
+                            Text(item.estimatedSeconds.minutesText)
+                                .font(.caption)
+                                .foregroundStyle(AppColor.textSecondary)
+                        }
+                        Spacer()
+                        Text(item.status.rawValue)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppColor.textSecondary)
+                    }
+                    .padding(12)
+                    .background(AppColor.surfaceCard.opacity(0.82), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
         }
+    }
+
+    @ViewBuilder
+    private var gentleOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .onTapGesture { /* modal scrim: ignore taps */ }
+
+            ScrollView {
+                Group {
+                    if model.interventionPanelVisible {
+                        InterventionPanel()
+                    } else if !model.feedbackOptions.isEmpty {
+                        FeedbackSheet(options: model.feedbackOptions)
+                    } else if let pendingUpdate = model.pendingStageUpdate {
+                        PlanAdjustmentPreviewCard(update: pendingUpdate)
+                    } else if let timeoutPrompt = model.timeoutDifficultyPrompt {
+                        TimeoutDifficultyCard(prompt: timeoutPrompt)
+                    } else if let postFeedbackMessage = model.postFeedbackMessage {
+                        PostFeedbackCard(message: postFeedbackMessage)
+                    } else if let stuck = model.stuckHelp {
+                        StuckHelpCard(response: stuck)
+                    }
+                }
+                .frame(maxWidth: 560)
+                .shadow(color: .black.opacity(0.18), radius: 26, y: 12)
+                .padding(40)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .transition(.opacity)
     }
 
     private func icon(for status: StageStatus) -> String {
@@ -287,8 +432,10 @@ struct InterventionPanel: View {
                 .foregroundStyle(AppColor.textSecondary)
             }
         }
-        .padding(20)
-        .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.calmLavender, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppColor.focusRing.opacity(0.18)))
     }
 }
 
@@ -304,38 +451,6 @@ struct TimerReadout: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .minimumScaleFactor(0.75)
             .accessibilityLabel("\(display / 60) minutes \(display % 60) seconds remaining")
-    }
-}
-
-struct FloatingCapsulePreview: View {
-    @EnvironmentObject private var model: FocusFlowAppModel
-    let stage: StagePlan
-    let seconds: Int
-
-    var body: some View {
-        VStack(spacing: 18) {
-            Text("Floating timer")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(AppColor.textSecondary)
-            TimerReadout(seconds: seconds)
-                .scaleEffect(0.56)
-                .frame(height: 70)
-            Button("I'm stuck") {
-                model.requestStuckHelp()
-            }
-                .buttonStyle(SecondaryButtonStyle())
-            Button("+5 min") {
-                model.extendCurrentStageByFiveMinutes()
-            }
-                .buttonStyle(SecondaryButtonStyle())
-            Button("Done") {
-                model.completeStage()
-            }
-                .buttonStyle(PrimaryButtonStyle())
-        }
-        .padding(20)
-        .background(AppColor.surfaceCard.opacity(0.78), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.actionPrimary.opacity(0.16)))
     }
 }
 
@@ -412,8 +527,10 @@ struct FeedbackSheet: View {
             .foregroundStyle(AppColor.textSecondary)
             .accessibilityIdentifier("stop_here_feedback_button")
         }
-        .padding(20)
-        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppColor.borderSubtle.opacity(0.6)))
         .accessibilityElement(children: .contain)
     }
 }
@@ -568,31 +685,199 @@ struct PostFeedbackCard: View {
     }
 }
 
+struct TimeoutDifficultyCard: View {
+    @EnvironmentObject private var model: FocusFlowAppModel
+    let prompt: DifficultyPrompt
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Time's up on this step")
+                .font(.title2.weight(.bold))
+                .foregroundStyle(AppColor.textPrimary)
+            Text(prompt.promptText)
+                .font(.body)
+                .foregroundStyle(AppColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            AdaptiveButtonRow {
+                ForEach(prompt.options) { option in
+                    Button {
+                        model.respondToTimeoutDifficulty(option)
+                    } label: {
+                        VStack(spacing: 8) {
+                            Text(option.emoji ?? "")
+                                .font(.title2)
+                            Text(option.label)
+                                .font(.headline)
+                        }
+                        .frame(minWidth: 96)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                }
+            }
+
+            Button("Close for now") {
+                model.dismissTimeoutDifficultyPrompt()
+            }
+            .buttonStyle(.plain)
+            .font(.callout)
+            .foregroundStyle(AppColor.textSecondary)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppColor.borderSubtle, lineWidth: 1))
+    }
+}
+
 struct StuckHelpCard: View {
     @EnvironmentObject private var model: FocusFlowAppModel
     let response: StuckHelpResponse
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
+            header
+            firstMove
+            if !model.stuckHintEntries.isEmpty {
+                entriesList
+            }
+            if model.stuckHintLoading {
+                loadingRow
+            }
+            actionButtons
+            if model.stuckEscalationVisible {
+                escalationRow
+            }
+            Button("Close for now") {
+                model.dismissStuckHelp()
+            }
+            .buttonStyle(.plain)
+            .font(.callout)
+            .foregroundStyle(AppColor.textSecondary)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppColor.borderSubtle, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
             Text(response.comfortText)
                 .font(.headline)
                 .foregroundStyle(AppColor.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let stageTitle = model.activeStageTitle {
+                Text("You're on: \(stageTitle)")
+                    .font(.subheadline)
+                    .foregroundStyle(AppColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var firstMove: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Smallest next move", systemImage: "arrow.turn.down.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppColor.actionPrimary)
             Text(response.nextSmallStep)
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(AppColor.textPrimary)
-            AdaptiveButtonRow {
-                ForEach(response.actions) { action in
-                    Button(action.title) {
-                        model.handleStuckAction(action)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.calmLavender, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var entriesList: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(model.stuckHintEntries) { entry in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: entry.symbol)
+                        .font(.callout)
+                        .foregroundStyle(AppColor.actionPrimary)
+                        .padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.label)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppColor.textSecondary)
+                        Text(entry.text)
+                            .font(.body)
+                            .foregroundStyle(AppColor.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(SecondaryButtonStyle())
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(20)
-        .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(response.comfortText) Next step: \(response.nextSmallStep)")
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.bgBase, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Finding a gentle next step…")
+                .font(.callout)
+                .foregroundStyle(AppColor.textSecondary)
+        }
+    }
+
+    private var actionButtons: some View {
+        AdaptiveButtonRow {
+            ForEach(uniqueActions) { action in
+                Button(actionTitle(for: action)) {
+                    model.handleStuckAction(action)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(isDisabled(action))
+            }
+        }
+    }
+
+    private var uniqueActions: [StuckHelpAction] {
+        var seen = Set<StuckActionType>()
+        return response.actions.filter { seen.insert($0.actionType).inserted }
+    }
+
+    private var escalationRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Still hard after a few tries? That's okay.")
+                .font(.callout)
+                .foregroundStyle(AppColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Try another way") {
+                model.escalateStuckHelp()
+            }
+            .buttonStyle(SecondaryButtonStyle())
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.calmLavender, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func actionTitle(for action: StuckHelpAction) -> String {
+        switch action.actionType {
+        case .hint:
+            if !model.canDeepenHint { return "More help" }
+            return model.stuckHintEntries.contains(where: { $0.kind == .hint }) ? "Deeper hint" : "Get a hint"
+        case .example:
+            return "See an example"
+        case .splitSmaller:
+            return "Split smaller"
+        case .shortBreak:
+            return "Short break"
+        }
+    }
+
+    private func isDisabled(_ action: StuckHelpAction) -> Bool {
+        if model.stuckHintLoading { return true }
+        if action.actionType == .hint, !model.canDeepenHint { return true }
+        return false
     }
 }
 
@@ -611,7 +896,7 @@ struct EmptyExecutionView: View {
                 .font(.title3)
                 .foregroundStyle(AppColor.textSecondary)
             Button("Create a task") {
-                model.route = .input
+                model.beginNewTask()
             }
             .buttonStyle(PrimaryButtonStyle())
         }

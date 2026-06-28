@@ -145,6 +145,27 @@ public enum VoiceCommandParser {
     }
 }
 
+public enum ClarificationHintRules {
+    public static func isAttachmentAction(_ hint: String) -> Bool {
+        let lower = hint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lower.isEmpty else { return true }
+        let attachmentPhrases = [
+            "i have a pdf", "i have the pdf", "i have rubric", "i have a rubric",
+            "attach pdf", "upload pdf", "assignment sheet", "syllabus pdf",
+            "have a rubric pdf", "have the rubric", "i have an assignment"
+        ]
+        if attachmentPhrases.contains(where: { lower.contains($0) }) { return true }
+        if lower.hasPrefix("i have") && (lower.contains("pdf") || lower.contains("rubric") || lower.contains("sheet")) {
+            return true
+        }
+        return false
+    }
+
+    public static func textHints(from hints: [String], limit: Int = 4) -> [String] {
+        Array(hints.filter { !isAttachmentAction($0) }.prefix(limit))
+    }
+}
+
 public enum NotificationFallbackPolicy {
     public static func floatingTimerMessage(stageTitle: String?) -> String {
         let target = stageTitle?.trimmingCharacters(in: .whitespacesAndNewlines)

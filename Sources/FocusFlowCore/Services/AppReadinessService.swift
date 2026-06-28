@@ -125,10 +125,8 @@ public struct AppReadinessService: Sendable {
         items.append(AppReadinessItem(
             id: "local_encryption",
             title: "Local encryption",
-            detail: settings.localEncryptionEnabled
-                ? "New local task, runtime, history, profile, and achievement files are encrypted with a Keychain-backed key."
-                : "Local encryption is off. You can enable it for new task, runtime, history, and profile files.",
-            state: settings.localEncryptionEnabled ? .ready : .off
+            detail: "Off. Learning data is stored as plain JSON on this Mac, without Keychain prompts for file storage.",
+            state: .off
         ))
 
         items.append(AppReadinessItem(

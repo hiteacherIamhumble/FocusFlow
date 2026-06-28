@@ -96,7 +96,9 @@ public actor ExecutionService: ExecutionServiceProtocol {
         let addedSeconds = max(60, seconds)
         runtime.plannedSeconds += addedSeconds
         runtime.lastTickAt = Date()
-        runtime.monotonicAnchor = ProcessInfo.processInfo.systemUptime
+        if runtime.status == .overtime {
+            runtime.status = .running
+        }
         try await runtimeStore.save(runtime)
 
         var task = try await repository.getTask(runtime.taskId)
@@ -104,6 +106,9 @@ public actor ExecutionService: ExecutionServiceProtocol {
             throw FocusFlowError.stageNotFound(runtime.stageId)
         }
         task.stages[index].estimatedSeconds = runtime.plannedSeconds
+        if task.stages[index].status == .overtime {
+            task.stages[index].status = .running
+        }
         task.estimatedTotalSeconds = task.stages.reduce(0) { $0 + $1.estimatedSeconds }
         try await repository.update(task)
 
@@ -119,6 +124,17 @@ public actor ExecutionService: ExecutionServiceProtocol {
             ]
         ))
         return runtime
+    }
+
+    public func enterOvertimeIfNeeded() async throws -> Bool {
+        var runtime = try await requireRuntime()
+        guard runtime.status == .running else { return runtime.status == .overtime }
+        guard let remaining = try await remainingSeconds(), remaining <= 0 else { return false }
+        runtime.status = .overtime
+        runtime.lastTickAt = Date()
+        try await runtimeStore.save(runtime)
+        try await updateStageStatus(taskId: runtime.taskId, stageId: runtime.stageId, status: .overtime, eventType: .stageTimeoutPrompted)
+        return true
     }
 
     public func applyStageUpdate(_ update: StageUpdate) async throws {
@@ -220,6 +236,7 @@ public actor ExecutionService: ExecutionServiceProtocol {
             taskTitle: task.title,
             stageTitle: stage.title,
             instruction: stage.instruction,
+            stageType: stage.stageType,
             plannedSeconds: runtime.plannedSeconds,
             elapsedSeconds: max(0, runtime.plannedSeconds - remaining),
             trigger: trigger

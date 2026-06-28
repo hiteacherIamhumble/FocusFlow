@@ -69,12 +69,12 @@ public struct FeedbackOptimizationService: FeedbackOptimizationServiceProtocol {
             taskType: task.taskType,
             stageTitle: stage?.title,
             stageType: stage?.stageType,
-            privacyMode: .localOnly,
+            privacyMode: .remoteLLMAllowedForCurrentContext,
             outputSummary: { (result: PlanOptimizationRunResult) in
                 "stage_update=\(result.update != nil); intervention=\(result.intervention?.interruptionType.rawValue ?? "none")"
             },
             operation: {
-                let update = optimizationAgent.optimize(task: taskSnapshot, feedback: feedback)
+                let update = await optimizationAgent.optimizeUsingLLM(task: taskSnapshot, feedback: feedback)
                 let intervention = counterIntervention ?? optimizationAgent.interventionIfNeeded(task: taskSnapshot, feedback: feedback)
                 return PlanOptimizationRunResult(update: update, intervention: intervention)
             }
@@ -201,6 +201,40 @@ public struct FeedbackOptimizationService: FeedbackOptimizationServiceProtocol {
             outputSummary: { "actions=\($0.actions.map(\.actionType.rawValue).joined(separator: ","))" },
             operation: {
                 await feedbackAgent.stuckHelpUsingLLM(for: request)
+            }
+        )
+    }
+
+    public func generateHint(_ request: StuckHelpRequest, level: Int) async throws -> String {
+        try await agentRunLogger.run(
+            agentName: "FeedbackAgent",
+            purpose: "generate_stuck_hint",
+            sourceModule: .module3FeedbackOptimization,
+            taskId: request.taskId,
+            stageId: request.stageId,
+            taskTitle: request.taskTitle,
+            stageTitle: request.stageTitle,
+            privacyMode: .remoteLLMAllowedForCurrentContext,
+            outputSummary: { _ in "hint_level=\(level)" },
+            operation: {
+                await feedbackAgent.hintUsingLLM(for: request, level: level)
+            }
+        )
+    }
+
+    public func generateExample(_ request: StuckHelpRequest) async throws -> String {
+        try await agentRunLogger.run(
+            agentName: "FeedbackAgent",
+            purpose: "generate_stuck_example",
+            sourceModule: .module3FeedbackOptimization,
+            taskId: request.taskId,
+            stageId: request.stageId,
+            taskTitle: request.taskTitle,
+            stageTitle: request.stageTitle,
+            privacyMode: .remoteLLMAllowedForCurrentContext,
+            outputSummary: { _ in "example" },
+            operation: {
+                await feedbackAgent.exampleUsingLLM(for: request)
             }
         )
     }

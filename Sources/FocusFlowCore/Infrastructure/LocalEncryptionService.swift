@@ -112,4 +112,26 @@ public struct LocalEncryptionService: Sendable {
     public static func isEncrypted(_ data: Data) -> Bool {
         String(data: data.prefix(7), encoding: .utf8) == envelopePrefix
     }
+
+    /// Decrypts legacy Keychain-backed files and rewrites them as plain JSON/text.
+    public func migrateEncryptedFilesToPlaintext(under root: URL) async throws -> Int {
+        var migratedCount = 0
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return 0
+        }
+        let urls = enumerator.compactMap { $0 as? URL }
+        for url in urls {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else { continue }
+            let raw = try Data(contentsOf: url)
+            guard Self.isEncrypted(raw) else { continue }
+            let plain = try await decryptIfNeeded(raw)
+            try plain.write(to: url, options: [.atomic])
+            migratedCount += 1
+        }
+        return migratedCount
+    }
 }

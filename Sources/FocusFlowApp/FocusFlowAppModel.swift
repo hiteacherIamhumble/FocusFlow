@@ -4,21 +4,77 @@ import Foundation
 import AppKit
 import SwiftUI
 
+struct StuckHintEntry: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case hint
+        case example
+    }
+
+    let id = UUID()
+    let kind: Kind
+    let text: String
+    let hintLevel: Int?
+
+    init(kind: Kind, text: String, hintLevel: Int? = nil) {
+        self.kind = kind
+        self.text = text
+        self.hintLevel = hintLevel
+    }
+
+    var label: String {
+        switch kind {
+        case .hint:
+            switch hintLevel ?? 0 {
+            case 0: return "Gentle hint"
+            case 1: return "Deeper hint"
+            default: return "Concrete hint"
+            }
+        case .example:
+            return "Example"
+        }
+    }
+
+    var symbol: String {
+        switch kind {
+        case .hint: return "lightbulb"
+        case .example: return "text.alignleft"
+        }
+    }
+}
+
+struct PlanningAttachment: Identifiable, Equatable {
+    let id: String
+    let fileName: String
+    let extractedText: String
+}
+
 @MainActor
 final class FocusFlowAppModel: ObservableObject {
     enum Route {
+        case home
         case input
         case plan
         case execution
         case closure
         case personalCenter
+        case history
         case settings
     }
 
-    @Published var route: Route = .input
+    enum NavTab: CaseIterable {
+        case home
+        case focus
+        case insights
+        case settings
+    }
+
+    @Published var route: Route = .home
     @Published var taskInput = ""
     @Published var pendingPlanDraft: TaskPlanDraft?
     @Published var clarificationQuestions: [ClarificationQuestion] = []
+    @Published var clarificationAnswerDraft = ""
+    @Published var planningAttachments: [PlanningAttachment] = []
+    var clarificationTurnNumber: Int { clarificationTurns.count + 1 }
     @Published var currentTask: TaskPlan?
     @Published var activeResult: StageExecutionResult?
     @Published var feedbackOptions: [FeedbackOption] = []
@@ -28,6 +84,10 @@ final class FocusFlowAppModel: ObservableObject {
     @Published var postFeedbackMessage: String?
     @Published var readyToContinueAfterFeedback = false
     @Published var stuckHelp: StuckHelpResponse?
+    @Published var timeoutDifficultyPrompt: DifficultyPrompt?
+    @Published var stuckHintEntries: [StuckHintEntry] = []
+    @Published var stuckHintLoading = false
+    @Published var stuckEscalationVisible = false
     @Published var interventionPanelVisible = false
     @Published var interventionReason = "This step may be asking for too much right now."
     @Published var closureSummary: TaskClosureSummary?
@@ -127,9 +187,13 @@ final class FocusFlowAppModel: ObservableObject {
     private var timeoutPromptedStageId: String?
     private var breakEndsAt: Date?
     private var stuckActionCount = 0
+    private var stuckHintLevel = 0
+    private var lastStuckRequest: StuckHelpRequest?
+    private let maxStuckHintLevel = 2
     private var stageUpdateUndoSnapshot: TaskPlan?
     private var lastAppliedStageUpdate: StageUpdate?
     private var latestNotificationAuthorized: Bool?
+    private var clarificationTurns: [TaskPlanningTurn] = []
 
     init() {
         let dataCenter = LocalDataCenterService(directory: directory)
@@ -155,7 +219,12 @@ final class FocusFlowAppModel: ObservableObject {
         self.eventBus = eventBus
         self.planningService = TaskPlanningService(agent: TaskBreakdownAgent(llmClient: llmClient), repository: repository, eventBus: eventBus)
         self.executionService = ExecutionService(repository: repository, runtimeStore: runtimeStore, eventBus: eventBus)
-        self.feedbackService = FeedbackOptimizationService(repository: repository, eventBus: eventBus, feedbackAgent: FeedbackAgent(llmClient: llmClient))
+        self.feedbackService = FeedbackOptimizationService(
+            repository: repository,
+            eventBus: eventBus,
+            feedbackAgent: FeedbackAgent(llmClient: llmClient),
+            optimizationAgent: PlanOptimizationAgent(llmClient: llmClient)
+        )
         self.closureService = TaskClosureService(repository: repository, dataCenter: dataCenter, eventBus: eventBus, emotionAgent: EmotionSupportAgent(llmClient: llmClient))
         self.profileAgent = ProfileAgent(llmClient: llmClient)
         self.historyQueryAgent = HistoryQueryAgent(llmClient: llmClient)
@@ -187,6 +256,7 @@ final class FocusFlowAppModel: ObservableObject {
             return
         }
         run {
+            self.resetPlanningClarificationState()
             let canUseRemoteAgent = await self.hasRemoteAgentCredentials()
             self.message = canUseRemoteAgent ? "Planning with DeepSeek v4 flash..." : "No DeepSeek key yet. Using local planning fallback."
             let context = try await self.agentContextForPlanning()
@@ -195,11 +265,93 @@ final class FocusFlowAppModel: ObservableObject {
             if !draft.clarificationQuestions.isEmpty {
                 self.pendingPlanDraft = draft
                 self.clarificationQuestions = draft.clarificationQuestions
-                self.message = "One quick choice will make the plan easier to start."
+                self.message = nil
             } else {
                 let plan = try await self.planningService.acceptDraft(draft, clarificationAnswer: nil)
-                self.pendingPlanDraft = nil
-                self.clarificationQuestions = []
+                self.resetPlanningClarificationState()
+                self.currentTask = plan
+                self.route = .plan
+                self.message = self.planReadyMessage(for: plan)
+            }
+        }
+    }
+
+    func applyClarificationHint(_ hint: String) {
+        guard !ClarificationHintRules.isAttachmentAction(hint) else { return }
+        clarificationAnswerDraft = hint
+    }
+
+    func attachPlanningPDF(from url: URL) {
+        run {
+            guard url.pathExtension.lowercased() == "pdf" else {
+                self.message = "Only PDF files are supported right now."
+                return
+            }
+            guard let text = PDFTextExtractor.extractText(from: url) else {
+                self.message = "Could not read text from that PDF."
+                return
+            }
+            try self.directory.prepare()
+            let storedName = "\(FocusFlowID.make("attachment")).pdf"
+            let storedURL = self.directory.attachments.appendingPathComponent(storedName)
+            if FileManager.default.fileExists(atPath: storedURL.path) {
+                try FileManager.default.removeItem(at: storedURL)
+            }
+            try FileManager.default.copyItem(at: url, to: storedURL)
+            let attachment = PlanningAttachment(id: storedName, fileName: url.lastPathComponent, extractedText: text)
+            if self.planningAttachments.count >= 2 {
+                self.planningAttachments.removeFirst()
+            }
+            self.planningAttachments.append(attachment)
+            self.message = "Attached \(url.lastPathComponent)."
+        }
+    }
+
+    func removePlanningAttachment(_ id: String) {
+        planningAttachments.removeAll { $0.id == id }
+    }
+
+    func submitClarificationAnswer(skip: Bool = false) {
+        guard let question = clarificationQuestions.first else {
+            clarificationQuestions = []
+            return
+        }
+        let answer = clarificationAnswerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !skip, answer.isEmpty, planningAttachments.isEmpty, !question.skippable {
+            message = "Write a short answer or attach a PDF so we can plan this properly."
+            return
+        }
+        run {
+            if skip {
+                self.clarificationTurns.append(TaskPlanningTurn(question: question.question, answer: "(skipped)"))
+            } else {
+                var combined = answer
+                if combined.isEmpty, !self.planningAttachments.isEmpty {
+                    combined = "See attached material."
+                }
+                if !combined.isEmpty || !self.planningAttachments.isEmpty {
+                    self.clarificationTurns.append(TaskPlanningTurn(question: question.question, answer: combined))
+                }
+            }
+            let planningContext = TaskPlanningContext(
+                rawInput: self.taskInput,
+                turns: self.clarificationTurns,
+                attachments: self.planningAttachments.map {
+                    TaskPlanningAttachment(fileName: $0.fileName, extractedText: $0.extractedText)
+                }
+            )
+            let agentContext = try await self.agentContextForPlanning()
+            let draft = try await self.planningService.continuePlanning(context: planningContext, agentContext: agentContext)
+            self.updatePlanningStatus(from: draft.task)
+            if !draft.clarificationQuestions.isEmpty {
+                self.pendingPlanDraft = draft
+                self.clarificationQuestions = draft.clarificationQuestions
+                self.clarificationAnswerDraft = ""
+                self.message = nil
+            } else {
+                let summary = self.clarificationSummary()
+                let plan = try await self.planningService.acceptDraft(draft, clarificationAnswer: summary)
+                self.resetPlanningClarificationState()
                 self.currentTask = plan
                 self.route = .plan
                 self.message = self.planReadyMessage(for: plan)
@@ -208,19 +360,10 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     func answerClarification(_ answer: String?) {
-        guard let draft = pendingPlanDraft else {
-            clarificationQuestions = []
-            return
+        if let answer, !answer.isEmpty {
+            clarificationAnswerDraft = answer
         }
-        run {
-            let plan = try await self.planningService.acceptDraft(draft, clarificationAnswer: answer)
-            self.pendingPlanDraft = nil
-            self.clarificationQuestions = []
-            self.currentTask = plan
-            self.route = .plan
-            self.updatePlanningStatus(from: plan)
-            self.message = answer == nil ? "Skipped. \(self.planReadyMessage(for: plan))" : "Got it. \(self.planReadyMessage(for: plan))"
-        }
+        submitClarificationAnswer(skip: answer == nil)
     }
 
     func refinePlan(_ instruction: String) {
@@ -288,6 +431,7 @@ final class FocusFlowAppModel: ObservableObject {
             self.startFeedbackPrewarmForActiveStage()
             await self.scheduleReminderForActiveStage()
             self.route = .execution
+            self.syncFloatingExecutionWindow()
             self.message = "Start with only the current step."
         }
     }
@@ -321,11 +465,14 @@ final class FocusFlowAppModel: ObservableObject {
 
     func extendCurrentStageByFiveMinutes() {
         run {
-            let runtime = try await self.executionService.extendCurrentStage(seconds: 300, trigger: .user)
+            _ = try await self.executionService.extendCurrentStage(seconds: 300, trigger: .user)
             await self.reloadCurrentTask()
             await self.scheduleReminderForActiveStage()
             self.remainingSeconds = try? await self.executionService.remainingSeconds()
-            self.message = "Added 5 minutes. New stage time: \(runtime.plannedSeconds / 60) min."
+            self.timeoutDifficultyPrompt = nil
+            self.timeoutPromptedStageId = nil
+            let remaining = self.remainingSeconds ?? 0
+            self.message = "Added 5 minutes. About \(max(1, remaining / 60)) min left on this step."
         }
     }
 
@@ -427,6 +574,33 @@ final class FocusFlowAppModel: ObservableObject {
         }
     }
 
+    private func proceedAfterFeedback(taskId: String) async throws {
+        await reloadCurrentTask()
+        postFeedbackMessage = nil
+        readyToContinueAfterFeedback = false
+        activeResult = nil
+        feedbackOptions = []
+        pendingStageUpdate = nil
+        clearStageUpdateUndo()
+        stuckHelp = nil
+        timeoutPromptedStageId = nil
+        message = nil
+
+        if let task = currentTask,
+           let next = task.stages.sorted(by: { $0.order < $1.order }).first(where: { $0.status == .idle || $0.status == .adjusted }) {
+            try await executionService.startStage(taskId: task.id, stageId: next.id)
+            await reloadCurrentTask()
+            startFeedbackPrewarmForActiveStage()
+            await scheduleReminderForActiveStage()
+        } else {
+            closureSummary = try await closureService.presentCompletion(taskId: taskId)
+            reviewResponses = [:]
+            reviewWasSkipped = false
+            speakClosureIfNeeded()
+            route = .closure
+        }
+    }
+
     func submitFeedback(_ option: FeedbackOption) {
         guard let result = activeResult else { return }
         run {
@@ -450,24 +624,12 @@ final class FocusFlowAppModel: ObservableObject {
                 try await self.presentInterventionClosure(intervention)
                 return
             }
-            self.pendingStageUpdate = outcome.stageUpdate
-            self.postFeedbackMessage = outcome.stageUpdate == nil
-                ? (outcome.lightweightMessage ?? "Feedback saved. The next step is ready.")
-                : nil
-            self.message = self.postFeedbackMessage
             if let update = outcome.stageUpdate {
-                self.readyToContinueAfterFeedback = true
+                self.pendingStageUpdate = update
                 self.message = update.reason
-            } else if self.hasRemainingStage {
-                self.readyToContinueAfterFeedback = true
-            } else {
-                self.readyToContinueAfterFeedback = false
-                self.closureSummary = try await self.closureService.presentCompletion(taskId: result.taskId)
-                self.reviewResponses = [:]
-                self.reviewWasSkipped = false
-                self.speakClosureIfNeeded()
-                self.route = .closure
+                return
             }
+            try await self.proceedAfterFeedback(taskId: result.taskId)
         }
     }
 
@@ -519,19 +681,7 @@ final class FocusFlowAppModel: ObservableObject {
             self.canUndoLastStageUpdate = self.stageUpdateUndoSnapshot != nil
             try await self.executionService.applyStageUpdate(update)
             self.pendingStageUpdate = nil
-            await self.reloadCurrentTask()
-            self.postFeedbackMessage = "\(update.reason) The next step is ready."
-            self.message = self.postFeedbackMessage
-            if self.hasRemainingStage {
-                self.readyToContinueAfterFeedback = true
-            } else {
-                self.readyToContinueAfterFeedback = false
-                self.closureSummary = try await self.closureService.presentCompletion(taskId: update.taskId)
-                self.reviewResponses = [:]
-                self.reviewWasSkipped = false
-                self.speakClosureIfNeeded()
-                self.route = .closure
-            }
+            try await self.proceedAfterFeedback(taskId: update.taskId)
         }
     }
 
@@ -544,29 +694,18 @@ final class FocusFlowAppModel: ObservableObject {
             try await self.executionService.revertStageUpdate(previousTask: snapshot, update: update)
             await self.reloadCurrentTask()
             self.clearStageUpdateUndo()
-            self.postFeedbackMessage = "Adjustment undone. The original next step is back."
-            self.message = self.postFeedbackMessage
-            self.readyToContinueAfterFeedback = self.hasRemainingStage
+            try await self.proceedAfterFeedback(taskId: snapshot.id)
         }
     }
 
     func keepOriginalPlanAfterFeedback() {
         clearStageUpdateUndo()
         pendingStageUpdate = nil
-        postFeedbackMessage = "Saved. You can keep the next step as-is."
-        message = postFeedbackMessage
-        if hasRemainingStage {
-            readyToContinueAfterFeedback = true
-        } else {
-            readyToContinueAfterFeedback = false
-            guard let taskId = activeResult?.taskId else { return }
-            run {
-                self.closureSummary = try await self.closureService.presentCompletion(taskId: taskId)
-                self.reviewResponses = [:]
-                self.reviewWasSkipped = false
-                self.speakClosureIfNeeded()
-                self.route = .closure
-            }
+        postFeedbackMessage = nil
+        readyToContinueAfterFeedback = false
+        guard let taskId = activeResult?.taskId ?? currentTask?.id else { return }
+        run {
+            try await self.proceedAfterFeedback(taskId: taskId)
         }
     }
 
@@ -595,29 +734,7 @@ final class FocusFlowAppModel: ObservableObject {
             _ = try await self.feedbackService.submitFeedback(feedback)
             self.voiceTranscript = ""
             self.feedbackOtherText = ""
-            self.feedbackOptions = []
-            self.pendingStageUpdate = nil
-            self.clearStageUpdateUndo()
-            self.postFeedbackMessage = nil
-            self.readyToContinueAfterFeedback = false
-            await self.reloadCurrentTask()
-            if let task = self.currentTask,
-               let next = task.stages.sorted(by: { $0.order < $1.order }).first(where: { $0.status == .idle || $0.status == .adjusted }) {
-                try await self.executionService.startStage(taskId: task.id, stageId: next.id)
-                await self.reloadCurrentTask()
-                self.startFeedbackPrewarmForActiveStage()
-                await self.scheduleReminderForActiveStage()
-                self.activeResult = nil
-                self.stuckHelp = nil
-                self.timeoutPromptedStageId = nil
-                self.message = "Feedback skipped. Next step is ready."
-            } else {
-                self.closureSummary = try await self.closureService.presentCompletion(taskId: result.taskId)
-                self.reviewResponses = [:]
-                self.reviewWasSkipped = false
-                self.speakClosureIfNeeded()
-                self.route = .closure
-            }
+            try await self.proceedAfterFeedback(taskId: result.taskId)
         }
     }
 
@@ -644,22 +761,70 @@ final class FocusFlowAppModel: ObservableObject {
     func requestStuckHelp() {
         run {
             let request = try await self.executionService.requestDifficulty(trigger: .userClickedDifficulty)
-            self.stuckHelp = try await self.feedbackService.generateStuckHelp(request)
+            self.beginStuckSession(with: request)
             self.stuckActionCount += 1
-            if self.stuckActionCount >= 2 {
-                self.showIntervention(reason: "You have asked for help a couple of times. We can make this gentler.")
-            }
+            self.stuckHelp = try await self.feedbackService.generateStuckHelp(request)
         }
     }
 
     func requestTimeoutStuckHelp() {
-        run {
-            let request = try await self.executionService.requestDifficulty(trigger: .timeoutNoAction)
-            self.timeoutPromptedStageId = request.stageId
-            self.stuckHelp = try await self.feedbackService.generateStuckHelp(request)
-            self.showIntervention(reason: "The timer ended without a clear next move. We can reset gently.")
-            self.message = "The timer ended. Let's make the next move smaller."
+        handleStageTimeout()
+    }
+
+    func respondToTimeoutDifficulty(_ option: FeedbackOption) {
+        timeoutDifficultyPrompt = nil
+        switch option.intent {
+        case .completed:
+            completeStage()
+        case .needMoreTime:
+            extendCurrentStageByFiveMinutes()
+        case .tooHard, .unclearInstruction:
+            requestStuckHelp()
+        case .needBreak:
+            takeShortBreak()
+        case .wantToQuit:
+            abandonCurrentTask(reason: "You chose to stop during the time check-in.")
+        default:
+            requestStuckHelp()
         }
+    }
+
+    func dismissTimeoutDifficultyPrompt() {
+        timeoutDifficultyPrompt = nil
+    }
+
+    private func handleStageTimeout() {
+        guard let stage = activeStage else { return }
+        timeoutPromptedStageId = stage.id
+        timeoutDifficultyPrompt = FeedbackAgent().difficultyPrompt(for: stage)
+        bringFloatingWindowToFront()
+        message = "Time's up for this step. What would help?"
+
+        Task { @MainActor in
+            do {
+                _ = try await self.executionService.enterOvertimeIfNeeded()
+                await self.reloadCurrentTask()
+                _ = try await self.executionService.requestDifficulty(trigger: .timeoutNoAction)
+            } catch {
+                self.message = error.localizedDescription
+            }
+        }
+    }
+
+    private func beginStuckSession(with request: StuckHelpRequest) {
+        lastStuckRequest = request
+        stuckHintEntries = []
+        stuckHintLevel = 0
+        stuckEscalationVisible = false
+        stuckHintLoading = false
+    }
+
+    var canDeepenHint: Bool {
+        stuckHintLevel < maxStuckHintLevel
+    }
+
+    var activeStageTitle: String? {
+        activeStage?.title
     }
 
     func testDeepSeekConnection() {
@@ -692,17 +857,17 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     func testFloatingTimer() {
-        floatingController.show(
-            stageTitle: activeStage?.title ?? "Floating timer test",
-            remainingSeconds: remainingSeconds ?? 300,
-            opacity: settings.floatingTimerOpacity,
-            savedOrigin: floatingTimerSavedOrigin,
-            onFrameChanged: { [weak self] frame in self?.saveFloatingTimerFrame(frame) },
-            onDifficulty: { [weak self] in self?.requestStuckHelp() },
-            onExtend: { [weak self] in self?.extendCurrentStageByFiveMinutes() },
-            onComplete: { [weak self] in self?.completeStage() }
-        )
-        message = "Floating timer is visible. Drag it to test placement."
+        guard currentTask != nil else {
+            message = "Start a task first to preview the floating focus window."
+            return
+        }
+        syncFloatingExecutionWindow()
+        message = "Floating focus window is visible. Drag it to test placement."
+    }
+
+    func bringFloatingWindowToFront() {
+        syncFloatingExecutionWindow()
+        floatingController.bringToFront()
     }
 
     func testVoicePrompt() {
@@ -761,20 +926,57 @@ final class FocusFlowAppModel: ObservableObject {
     func handleStuckAction(_ action: StuckHelpAction) {
         switch action.actionType {
         case .hint:
-            run {
-                await self.recordStuckAction(.hint)
-                self.message = "Hint: name the one word, formula, or sentence you can identify first."
-            }
+            requestNextHint()
         case .example:
-            run {
-                await self.recordStuckAction(.example)
-                self.message = "Example: write a rough placeholder now and improve it later."
-            }
+            requestStuckExample()
         case .splitSmaller:
+            dismissStuckHelp()
             splitActiveStageSmaller()
         case .shortBreak:
+            dismissStuckHelp()
             takeShortBreak()
         }
+    }
+
+    private func requestNextHint() {
+        guard let request = lastStuckRequest, !stuckHintLoading else { return }
+        let level = stuckHintLevel
+        stuckHintLoading = true
+        run {
+            defer { self.stuckHintLoading = false }
+            let text = try await self.feedbackService.generateHint(request, level: level)
+            self.stuckHintEntries.append(StuckHintEntry(kind: .hint, text: text, hintLevel: level))
+            self.stuckHintLevel = min(self.stuckHintLevel + 1, self.maxStuckHintLevel)
+            await self.recordStuckAction(.hint)
+            if !self.canDeepenHint {
+                self.stuckEscalationVisible = true
+            }
+        }
+    }
+
+    private func requestStuckExample() {
+        guard let request = lastStuckRequest, !stuckHintLoading else { return }
+        stuckHintLoading = true
+        run {
+            defer { self.stuckHintLoading = false }
+            let text = try await self.feedbackService.generateExample(request)
+            self.stuckHintEntries.append(StuckHintEntry(kind: .example, text: text))
+            await self.recordStuckAction(.example)
+        }
+    }
+
+    func dismissStuckHelp() {
+        stuckHelp = nil
+        stuckHintEntries = []
+        stuckHintLevel = 0
+        stuckEscalationVisible = false
+        stuckHintLoading = false
+    }
+
+    /// User-initiated escalation from the stuck sheet into the gentle intervention panel.
+    func escalateStuckHelp() {
+        dismissStuckHelp()
+        showIntervention(reason: "Still hard after a few tries. Let's choose a gentler path together.")
     }
 
     func splitActiveStageSmaller() {
@@ -1119,10 +1321,13 @@ final class FocusFlowAppModel: ObservableObject {
     func loadSettings() async {
         do {
             settings = try await settingsService.loadSettings()
+            let hadEncryptionEnabled = settings.localEncryptionEnabled
+            settings.localEncryptionEnabled = false
+            if hadEncryptionEnabled {
+                try await settingsService.saveSettings(settings)
+            }
+            await applyLocalEncryptionDisabled(migrateLegacyFiles: hadEncryptionEnabled)
             await dataCenter.setProfileLearningEnabled(settings.profileLearningEnabled)
-            await dataCenter.setLocalEncryptionEnabled(settings.localEncryptionEnabled)
-            await repository.setLocalEncryptionEnabled(settings.localEncryptionEnabled)
-            await runtimeStore.setLocalEncryptionEnabled(settings.localEncryptionEnabled)
             await remoteAgentGate.setEnabled(settings.remoteAgentEnabled)
             applyHotkeySettings()
             if await credentialStore.readDeepSeekAPIKey() != nil {
@@ -1136,11 +1341,10 @@ final class FocusFlowAppModel: ObservableObject {
 
     func saveSettings() {
         run {
+            self.settings.localEncryptionEnabled = false
             try await self.settingsService.saveSettings(self.settings)
+            await self.applyLocalEncryptionDisabled(migrateLegacyFiles: false)
             await self.dataCenter.setProfileLearningEnabled(self.settings.profileLearningEnabled)
-            await self.dataCenter.setLocalEncryptionEnabled(self.settings.localEncryptionEnabled)
-            await self.repository.setLocalEncryptionEnabled(self.settings.localEncryptionEnabled)
-            await self.runtimeStore.setLocalEncryptionEnabled(self.settings.localEncryptionEnabled)
             await self.remoteAgentGate.setEnabled(self.settings.remoteAgentEnabled)
             self.applyHotkeySettings()
             if self.settings.notificationsEnabled {
@@ -1355,6 +1559,83 @@ final class FocusFlowAppModel: ObservableObject {
         }
     }
 
+    var activeTab: NavTab {
+        switch route {
+        case .home: return .home
+        case .input, .plan, .execution, .closure: return .focus
+        case .personalCenter, .history: return .insights
+        case .settings: return .settings
+        }
+    }
+
+    func openHistory() {
+        route = .history
+        Task {
+            await refreshStats()
+        }
+    }
+
+    var hasResumableTask: Bool {
+        guard let task = currentTask else { return false }
+        return [.draft, .planned, .active, .paused].contains(task.status)
+    }
+
+    func selectTab(_ tab: NavTab) {
+        switch tab {
+        case .home:
+            route = .home
+        case .focus:
+            enterFocusFlow()
+        case .insights:
+            route = .personalCenter
+            Task { await refreshStats() }
+        case .settings:
+            route = .settings
+        }
+    }
+
+    func enterFocusFlow() {
+        if closureSummary != nil {
+            route = .closure
+            return
+        }
+        guard let task = currentTask else {
+            route = .input
+            return
+        }
+        switch task.status {
+        case .draft, .planned:
+            route = .plan
+        case .active, .paused:
+            route = .execution
+            syncFloatingExecutionWindow()
+        default:
+            route = .input
+        }
+    }
+
+    func goHome() {
+        route = .home
+    }
+
+    func beginNewTask() {
+        taskInput = ""
+        pendingPlanDraft = nil
+        clarificationQuestions = []
+        route = .input
+    }
+
+    func goToFlowStep(_ target: Route) {
+        let order: [Route] = [.input, .plan, .execution, .closure]
+        guard let current = order.firstIndex(of: route),
+              let next = order.firstIndex(of: target),
+              next < current else { return }
+        // Only allow safe backward navigation within the planning phase.
+        if route == .plan, target == .input {
+            route = .input
+        }
+    }
+
     private func reloadCurrentTask() async {
         guard let id = currentTask?.id else { return }
         currentTask = try? await repository.getTask(id)
@@ -1399,6 +1680,27 @@ final class FocusFlowAppModel: ObservableObject {
             return true
         }
         return await credentialStore.readDeepSeekAPIKey() != nil
+    }
+
+    func clearPlanningClarification() {
+        resetPlanningClarificationState()
+    }
+
+    private func resetPlanningClarificationState() {
+        pendingPlanDraft = nil
+        clarificationQuestions = []
+        clarificationAnswerDraft = ""
+        planningAttachments = []
+        clarificationTurns = []
+    }
+
+    private func clarificationSummary() -> String? {
+        guard !clarificationTurns.isEmpty || !planningAttachments.isEmpty else { return nil }
+        var parts: [String] = clarificationTurns.map { "Q: \($0.question)\nA: \($0.answer)" }
+        for attachment in planningAttachments {
+            parts.append("Attachment: \(attachment.fileName)\n\(attachment.extractedText.prefix(500))")
+        }
+        return parts.joined(separator: "\n\n")
     }
 
     private func updatePlanningStatus(from task: TaskPlan) {
@@ -1449,6 +1751,7 @@ final class FocusFlowAppModel: ObservableObject {
                 message = "Your last plan is ready."
             } else {
                 route = .execution
+                syncFloatingExecutionWindow()
                 message = "Restored your last learning session."
                 await scheduleReminderForActiveStage()
             }
@@ -1463,7 +1766,7 @@ final class FocusFlowAppModel: ObservableObject {
                 guard let self else { return }
                 self.remainingSeconds = try? await self.executionService.remainingSeconds()
                 self.updateBreakCountdown()
-                self.updateFloatingTimer()
+                self.syncFloatingExecutionWindow()
                 self.handleTimeoutIfNeeded()
             }
         }
@@ -1482,34 +1785,45 @@ final class FocusFlowAppModel: ObservableObject {
         }
     }
 
-    private func updateFloatingTimer() {
-        guard route == .execution,
-              let stage = activeStage,
-              stage.status == .running || stage.status == .overtime,
-              let seconds = remainingSeconds else {
+    private func syncFloatingExecutionWindow() {
+        guard route == .execution, currentTask != nil else {
             floatingController.hide()
             return
         }
         floatingController.show(
-            stageTitle: stage.title,
-            remainingSeconds: seconds,
-            opacity: settings.floatingTimerOpacity,
+            model: self,
             savedOrigin: floatingTimerSavedOrigin,
-            onFrameChanged: { [weak self] frame in self?.saveFloatingTimerFrame(frame) },
-            onDifficulty: { [weak self] in self?.requestStuckHelp() },
-            onExtend: { [weak self] in self?.extendCurrentStageByFiveMinutes() },
-            onComplete: { [weak self] in self?.completeStage() }
+            onFrameChanged: { [weak self] frame in self?.saveFloatingTimerFrame(frame) }
         )
     }
 
+    private func applyLocalEncryptionDisabled(migrateLegacyFiles: Bool) async {
+        await dataCenter.setLocalEncryptionEnabled(false)
+        await repository.setLocalEncryptionEnabled(false)
+        await runtimeStore.setLocalEncryptionEnabled(false)
+        guard migrateLegacyFiles else { return }
+        let encryption = LocalEncryptionService()
+        do {
+            let migratedCount = try await encryption.migrateEncryptedFilesToPlaintext(under: directory.root)
+            if migratedCount > 0 {
+                message = "Local encryption is off. Converted \(migratedCount) file(s) to plain storage."
+            }
+        } catch {
+            message = "Local encryption is off, but some encrypted files could not be converted: \(error.localizedDescription)"
+        }
+    }
+
     private func handleTimeoutIfNeeded() {
-        guard let stage = activeStage,
-              (stage.status == .running || stage.status == .overtime),
-              (remainingSeconds ?? 1) <= 0,
+        guard timeoutDifficultyPrompt == nil,
+              stuckHelp == nil,
+              let stage = activeStage,
+              stage.status == .running || stage.status == .overtime,
+              let remaining = remainingSeconds,
+              remaining <= 0,
               timeoutPromptedStageId != stage.id else {
             return
         }
-        requestTimeoutStuckHelp()
+        handleStageTimeout()
     }
 
     private func scheduleReminderForActiveStage() async {

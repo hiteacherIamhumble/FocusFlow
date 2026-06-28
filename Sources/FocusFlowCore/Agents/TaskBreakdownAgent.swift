@@ -8,24 +8,65 @@ public struct TaskBreakdownAgent: Sendable {
     }
 
     public func makeDraftUsingLLM(from request: TaskInputRequest, privacyMode: PrivacyMode = .remoteLLMAllowedForCurrentContext) async -> TaskPlanDraft {
+        await planUsingLLM(
+            context: TaskPlanningContext(rawInput: request.rawInput),
+            request: request,
+            privacyMode: privacyMode
+        )
+    }
+
+    public func continuePlanningUsingLLM(
+        context: TaskPlanningContext,
+        agentContext: AgentContext?,
+        privacyMode: PrivacyMode = .remoteLLMAllowedForCurrentContext
+    ) async -> TaskPlanDraft {
+        let request = TaskInputRequest(
+            rawInput: context.rawInput,
+            userProfileSnapshot: agentContext?.userProfileSnapshot,
+            agentContext: agentContext
+        )
+        return await planUsingLLM(context: context, request: request, privacyMode: privacyMode)
+    }
+
+    private func planUsingLLM(
+        context: TaskPlanningContext,
+        request: TaskInputRequest,
+        privacyMode: PrivacyMode
+    ) async -> TaskPlanDraft {
         let rawInput = request.rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard rawInput.isEmpty || isProbablyEducational(rawInput) else {
-            return emptyDraft(for: rawInput, profile: request.userProfileSnapshot)
+            return TaskPlanDraft(
+                task: TaskPlan(
+                    originalInput: rawInput,
+                    title: "New learning task",
+                    taskType: .unknown,
+                    estimatedTotalSeconds: 0,
+                    stages: []
+                ),
+                confidence: 0,
+                clarificationQuestions: []
+            )
         }
         guard let llmClient else {
-            return (try? makeDraft(from: request)) ?? emptyDraft(for: request.rawInput, profile: request.userProfileSnapshot)
+            if !context.turns.isEmpty || !context.attachments.isEmpty {
+                return localDraftFromContext(context, request: request)
+            }
+            return clarificationFirstDraft(for: request) ?? ((try? makeDraft(from: request)) ?? emptyDraft(for: request.rawInput, profile: request.userProfileSnapshot))
         }
         do {
             let content = try await llmClient.complete(
                 messages: [
                     LLMMessage(role: "system", content: taskPlanningSystemPrompt),
-                    LLMMessage(role: "user", content: taskPlanningUserPrompt(for: request))
+                    LLMMessage(role: "user", content: taskPlanningUserPrompt(context: context, request: request))
                 ],
                 privacyMode: privacyMode,
                 responseFormat: .jsonObject
             )
-            return try decodeLLMDraft(content, request: request)
+            return try decodeLLMDraft(content, request: request, context: context)
         } catch {
+            if let fallback = clarificationFirstDraft(for: request) {
+                return fallback
+            }
             let fallback = (try? makeDraft(from: request)) ?? emptyDraft(for: request.rawInput, profile: request.userProfileSnapshot)
             var task = fallback.task
             task.metadata["planning_mode"] = "local_rules"
@@ -63,7 +104,14 @@ public struct TaskBreakdownAgent: Sendable {
             metadata: ["planning_mode": "local_rules"]
         )
         let questions = clarificationQuestions(for: rawInput, type: taskType)
-        return TaskPlanDraft(task: task, confidence: questions.isEmpty ? 0.78 : 0.52, clarificationQuestions: questions)
+        if !questions.isEmpty {
+            var task = task
+            task.stages = []
+            task.estimatedTotalSeconds = 0
+            task.metadata["awaiting_clarification"] = "true"
+            return TaskPlanDraft(task: task, confidence: 0.35, clarificationQuestions: questions)
+        }
+        return TaskPlanDraft(task: task, confidence: 0.78, clarificationQuestions: [])
     }
 
     public func refine(_ task: TaskPlan, instruction: String) -> TaskPlan {
@@ -153,11 +201,127 @@ public struct TaskBreakdownAgent: Sendable {
             clarificationQuestions: [
                 ClarificationQuestion(
                     question: "What learning task would you like to start with?",
-                    options: ["An assignment", "Reading", "Exam review", "Presentation"],
+                    placeholder: "Course, assignment, topic, or deadline",
+                    hintOptions: ["An assignment", "Reading for class", "Exam review"],
+                    allowsFileUpload: true,
                     skippable: false
                 )
             ]
         )
+    }
+
+    private func localDraftFromContext(_ context: TaskPlanningContext, request: TaskInputRequest) -> TaskPlanDraft {
+        let enriched = enrichedPlanningInput(from: context)
+        let profile = request.userProfileSnapshot ?? request.agentContext?.userProfileSnapshot
+        let taskType = classify(enriched)
+        let resolvedType = taskType != .unknown ? taskType : classify(context.rawInput)
+        guard resolvedType != .unknown || looksEducational(context.rawInput) else {
+            return emptyDraft(for: request.rawInput, profile: profile)
+        }
+        let taskId = FocusFlowID.make("task")
+        let stages = makeStages(
+            taskId: taskId,
+            input: enriched,
+            taskType: resolvedType,
+            profile: profile
+        )
+        var task = TaskPlan(
+            id: taskId,
+            originalInput: request.rawInput,
+            title: makeTitle(from: context.rawInput, type: resolvedType),
+            taskType: resolvedType,
+            status: .draft,
+            estimatedTotalSeconds: stages.reduce(0) { $0 + $1.estimatedSeconds },
+            stages: stages,
+            metadata: [
+                "planning_mode": "local_rules",
+                "clarification_rounds": "\(context.turns.count)"
+            ]
+        )
+        return TaskPlanDraft(task: task, confidence: 0.75, clarificationQuestions: [])
+    }
+
+    private func enrichedPlanningInput(from context: TaskPlanningContext) -> String {
+        var parts = [context.rawInput.trimmingCharacters(in: .whitespacesAndNewlines)]
+        for turn in context.turns {
+            parts.append("\(turn.question) \(turn.answer)")
+        }
+        for attachment in context.attachments.prefix(2) {
+            parts.append("Material from \(attachment.fileName): \(attachment.extractedText.prefix(500))")
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    private func clarificationFirstDraft(for request: TaskInputRequest) -> TaskPlanDraft? {
+        let rawInput = request.rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawInput.isEmpty else { return nil }
+        let taskType = classify(rawInput)
+        guard needsClarification(rawInput: rawInput, taskType: taskType) else { return nil }
+        let question = targetedClarificationQuestion(for: rawInput, taskType: taskType)
+        let task = TaskPlan(
+            originalInput: rawInput,
+            title: makeTitle(from: rawInput, type: taskType),
+            taskType: taskType,
+            estimatedTotalSeconds: 0,
+            stages: [],
+            metadata: ["planning_mode": "local_rules", "awaiting_clarification": "true"]
+        )
+        return TaskPlanDraft(task: task, confidence: 0.35, clarificationQuestions: [question])
+    }
+
+    private func needsClarification(rawInput: String, taskType: EducationTaskType) -> Bool {
+        let wordCount = rawInput.split(whereSeparator: { $0.isWhitespace }).count
+        if wordCount <= 6 || rawInput.count < 28 { return true }
+        if taskType == .unknown { return true }
+        let lower = rawInput.lowercased()
+        let hasConcreteDetail = containsAny(lower, [
+            "about", "topic", "due", "deadline", "page", "word", "chapter", "question",
+            "prompt", "rubric", "thesis", "compare", "analyze", "course", "class"
+        ])
+        return !hasConcreteDetail
+    }
+
+    private func targetedClarificationQuestion(for rawInput: String, taskType: EducationTaskType) -> ClarificationQuestion {
+        switch taskType {
+        case .writing:
+            return ClarificationQuestion(
+                question: "What is this writing task about, and what do you have so far?",
+                placeholder: "Paste the prompt, topic, word count, or deadline",
+                hintOptions: ["Due Friday, about 1200 words", "Topic: social media and teens"],
+                allowsFileUpload: true,
+                skippable: true
+            )
+        case .reading:
+            return ClarificationQuestion(
+                question: "What are you reading, and what should you get from it?",
+                placeholder: "Paper title, chapter, or what your class wants you to notice",
+                hintOptions: ["Chapter 3 for Tuesday discussion", "Find the main argument"],
+                allowsFileUpload: true,
+                skippable: true
+            )
+        case .examReview:
+            return ClarificationQuestion(
+                question: "What exam or material are you reviewing, and when is it?",
+                placeholder: "Course, topics, or what feels most urgent",
+                allowsFileUpload: true,
+                skippable: true
+            )
+        case .presentation:
+            return ClarificationQuestion(
+                question: "What is the presentation about, and what are the requirements?",
+                placeholder: "Topic, time limit, audience, or due date",
+                allowsFileUpload: true,
+                skippable: true
+            )
+        default:
+            return ClarificationQuestion(
+                question: "What exactly do you need to do for this task?",
+                placeholder: "Describe the assignment, materials, and deadline in your own words",
+                hintOptions: ["Due tomorrow", "Not sure where to start"],
+                allowsFileUpload: true,
+                skippable: true
+            )
+        }
     }
 
     private var taskPlanningSystemPrompt: String {
@@ -167,16 +331,35 @@ public struct TaskBreakdownAgent: Sendable {
         The product helps students with ADHD traits start education tasks.
         Do not diagnose. Do not shame. Do not use words like lazy, failure, should, or must.
         Accept only learning-related tasks: writing, reading, examReview, homework, presentation, longTermProject, unknown.
-        Create short, concrete stages. The first stage must be 120-300 seconds.
-        Normal stages should be <= 1500 seconds. Each stage needs title, instruction, completionCriteria, stageType, estimatedSeconds.
-        Stage types: startup, reading, writing, reviewing, problemSolving, organizing, presentationMaking, breakTime, other.
-        UI copy must be English, warm, direct, and low-pressure.
+
+        CLARIFICATION RULES (critical):
+        - If the input is vague or missing details needed to plan (topic, prompt, deadline, materials, scope), ask ONE targeted follow-up question and return an empty stages array.
+        - Ask about concrete missing facts: assignment prompt, topic, due date, page count, source material, exam scope, presentation requirements.
+        - NEVER ask generic taxonomy questions such as essay type with Argumentative/Descriptive/Narrative/Expository.
+        - NEVER repeat the user's words back as the only options.
+        - hint_options are optional example ANSWERS the user might type (0-3 items), e.g. "Due Friday, 800 words" or "Compare two sources on immigration".
+        - NEVER use hint_options for actions like "I have a PDF", "Attach file", or "I have a rubric". Use allows_file_upload for file attachment instead.
+        - Set allows_file_upload=true when a PDF rubric, assignment sheet, reading, or syllabus would help.
+        - Do not ask more than 2 clarification rounds total; after that, make the best reasonable plan.
+
+        PLAN RULES:
+        - Create short, concrete stages. The first stage must be 120-300 seconds.
+        - Normal stages should be <= 1500 seconds. Each stage needs title, instruction, completionCriteria, stageType, estimatedSeconds.
+        - Stage types: startup, reading, writing, reviewing, problemSolving, organizing, presentationMaking, breakTime, other.
+        - UI copy must be English, warm, direct, and low-pressure.
+
         JSON schema:
         {
           "title": "string",
           "task_type": "writing|reading|examReview|homework|presentation|longTermProject|unknown",
           "confidence": 0.0,
-          "clarification_questions": [{"question":"string","options":["string"],"skippable":true}],
+          "clarification_questions": [{
+            "question":"What is the essay topic or assignment prompt?",
+            "placeholder":"Paste the prompt, topic, class, or deadline",
+            "hint_options":["Due Friday, about 1000 words"],
+            "allows_file_upload": true,
+            "skippable": true
+          }],
           "stages": [
             {"title":"string","instruction":"string","completion_criteria":"string","stage_type":"startup","estimated_seconds":180}
           ]
@@ -210,15 +393,46 @@ public struct TaskBreakdownAgent: Sendable {
         """
     }
 
-    private func taskPlanningUserPrompt(for request: TaskInputRequest) -> String {
+    private func taskPlanningUserPrompt(context: TaskPlanningContext, request: TaskInputRequest) -> String {
+        let profilePrompt = taskPlanningProfilePrompt(for: request)
+        var sections = [
+            "Raw user input:",
+            request.rawInput,
+            "",
+            profilePrompt
+        ]
+        if !context.turns.isEmpty {
+            sections.append("")
+            sections.append("Prior clarification:")
+            for turn in context.turns {
+                sections.append("Q: \(turn.question)")
+                sections.append("A: \(turn.answer)")
+            }
+        }
+        if !context.attachments.isEmpty {
+            sections.append("")
+            sections.append("Attached materials (privacy-filtered excerpts):")
+            for attachment in context.attachments.prefix(3) {
+                sections.append("[\(attachment.fileName)]")
+                sections.append(attachment.extractedText)
+            }
+        }
+        sections.append("")
+        if context.turns.isEmpty {
+            sections.append("If the input is still too vague to plan well, return ONE clarification question and an empty stages array.")
+        } else {
+            sections.append("Use the clarification answers and attachments above. Return either ONE more targeted question with empty stages, or a final plan with 4-8 stages.")
+        }
+        sections.append("Keep all text English.")
+        return sections.joined(separator: "\n")
+    }
+
+    private func taskPlanningProfilePrompt(for request: TaskInputRequest) -> String {
         let context = request.agentContext
         let profile = context?.userProfileSnapshot ?? request.userProfileSnapshot
         let stats = context?.recentStatsSummary
         let recentNotes = context?.recentSimilarTaskNotes.prefix(5).joined(separator: "\n- ") ?? ""
         return """
-        Raw user input:
-        \(request.rawInput)
-
         Local profile snapshot, already privacy-filtered:
         preferred_stage_duration_seconds=\(profile?.preferredStageDurationSeconds.map(String.init) ?? "unknown")
         recommended_first_stage_seconds=\(profile?.recommendedFirstStageSeconds.map(String.init) ?? "180")
@@ -232,8 +446,6 @@ public struct TaskBreakdownAgent: Sendable {
 
         Recent privacy-filtered history notes:
         \(recentNotes.isEmpty ? "none" : "- \(recentNotes)")
-
-        Return a plan with 4-8 stages unless the task is tiny. Keep all text English.
         """
     }
 
@@ -269,12 +481,34 @@ public struct TaskBreakdownAgent: Sendable {
         """
     }
 
-    private func decodeLLMDraft(_ content: String, request: TaskInputRequest) throws -> TaskPlanDraft {
+    private func decodeLLMDraft(_ content: String, request: TaskInputRequest, context: TaskPlanningContext) throws -> TaskPlanDraft {
         let data = Data(content.utf8)
         let decoded = try FocusFlowJSON.decoder.decode(LLMTaskPlanDraft.self, from: data)
         let taskType = EducationTaskType(rawValue: decoded.taskType) ?? .unknown
         guard taskType != .unknown || looksEducational(request.rawInput) else {
             throw FocusFlowError.nonEducationalTask
+        }
+        let questions = sanitizeClarificationQuestions(decoded.clarificationQuestions, rawInput: request.rawInput, taskType: taskType)
+        if !questions.isEmpty && decoded.stages.isEmpty {
+            let task = TaskPlan(
+                id: FocusFlowID.make("task"),
+                originalInput: request.rawInput,
+                title: decoded.title.cleanAgentText(fallback: makeTitle(from: request.rawInput, type: taskType)),
+                taskType: taskType,
+                status: .draft,
+                estimatedTotalSeconds: 0,
+                stages: [],
+                metadata: [
+                    "planning_mode": "deepseek_v4_flash",
+                    "awaiting_clarification": "true",
+                    "clarification_round": "\(context.turns.count + 1)"
+                ]
+            )
+            return TaskPlanDraft(
+                task: task,
+                confidence: min(1, max(0, decoded.confidence)),
+                clarificationQuestions: questions
+            )
         }
         let taskId = FocusFlowID.make("task")
         var stages = decoded.stages.enumerated().map { index, stage in
@@ -289,6 +523,9 @@ public struct TaskBreakdownAgent: Sendable {
             )
         }
         if stages.isEmpty {
+            if let fallback = clarificationFirstDraft(for: request) {
+                return fallback
+            }
             return try makeDraft(from: request)
         }
         stages[0].estimatedSeconds = min(300, max(120, stages[0].estimatedSeconds))
@@ -307,14 +544,39 @@ public struct TaskBreakdownAgent: Sendable {
             stages: stages,
             metadata: ["planning_mode": "deepseek_v4_flash"]
         )
-        let questions = decoded.clarificationQuestions.prefix(3).map {
-            ClarificationQuestion(
-                question: $0.question.cleanAgentText(fallback: "Which part should we start with?"),
-                options: Array($0.options.prefix(4)),
-                skippable: $0.skippable
-            )
+        return TaskPlanDraft(task: task, confidence: min(1, max(0, decoded.confidence)), clarificationQuestions: [])
+    }
+
+    private func sanitizeClarificationQuestions(
+        _ questions: [LLMClarificationQuestion],
+        rawInput: String,
+        taskType: EducationTaskType
+    ) -> [ClarificationQuestion] {
+        guard let first = questions.first else { return [] }
+        if isGenericTaxonomyQuestion(first.question, options: first.resolvedHintOptions) {
+            return [targetedClarificationQuestion(for: rawInput, taskType: taskType)]
         }
-        return TaskPlanDraft(task: task, confidence: min(1, max(0, decoded.confidence)), clarificationQuestions: Array(questions))
+        return [
+            ClarificationQuestion(
+                question: first.question.cleanAgentText(fallback: targetedClarificationQuestion(for: rawInput, taskType: taskType).question),
+                placeholder: first.placeholder?.cleanAgentText(fallback: "Type your answer here"),
+                hintOptions: ClarificationHintRules.textHints(from: Array(first.resolvedHintOptions.prefix(3)), limit: 3),
+                allowsFileUpload: first.allowsFileUpload ?? true,
+                skippable: first.skippable
+            )
+        ]
+    }
+
+    private func isGenericTaxonomyQuestion(_ question: String, options: [String]) -> Bool {
+        let lower = question.lowercased()
+        let genericTypes = ["argumentative", "descriptive", "narrative", "expository", "persuasive", "analytical"]
+        let optionHits = options.filter { option in
+            genericTypes.contains(where: { option.lowercased().contains($0) })
+        }.count
+        if optionHits >= 2 { return true }
+        if lower.contains("what type of essay") || lower.contains("what kind of essay") { return true }
+        if lower.contains("essay type") && optionHits >= 1 { return true }
+        return false
     }
 
     private func decodeLLMRefinement(_ content: String, existingTask: TaskPlan, instruction: String) throws -> TaskPlan {
@@ -473,14 +735,8 @@ public struct TaskBreakdownAgent: Sendable {
     }
 
     private func clarificationQuestions(for input: String, type: EducationTaskType) -> [ClarificationQuestion] {
-        guard input.split(separator: " ").count <= 3 || input.count < 12 || type == .unknown else { return [] }
-        return [
-            ClarificationQuestion(
-                question: "Which part should we make easier to start?",
-                options: ["The most urgent", "The easiest", "The most stressful", "Choose for me"],
-                skippable: true
-            )
-        ]
+        guard needsClarification(rawInput: input, taskType: type) else { return [] }
+        return [targetedClarificationQuestion(for: input, taskType: type)]
     }
 
     private func splitLongestStage(in task: TaskPlan) -> [StagePlan] {
@@ -598,8 +854,15 @@ private struct LLMTaskPlanDraft: Decodable {
 
 private struct LLMClarificationQuestion: Decodable {
     let question: String
-    let options: [String]
+    let placeholder: String?
+    let hintOptions: [String]?
+    let options: [String]?
+    let allowsFileUpload: Bool?
     let skippable: Bool
+
+    var resolvedHintOptions: [String] {
+        hintOptions ?? options ?? []
+    }
 }
 
 private struct LLMStage: Decodable {

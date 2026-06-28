@@ -55,15 +55,10 @@ public struct FeedbackAgent: Sendable {
                 responseFormat: .jsonObject
             )
             let decoded = try FocusFlowJSON.decoder.decode(LLMStuckHelp.self, from: Data(content.utf8))
-            let actions = decoded.actions.prefix(4).compactMap { action -> StuckHelpAction? in
-                guard let type = StuckActionType(rawValue: action.actionType) else { return nil }
-                return StuckHelpAction(title: action.title.cleanActionTitle, actionType: type)
-            }
-            guard !actions.isEmpty else { return stuckHelp(for: request) }
             return StuckHelpResponse(
-                comfortText: decoded.comfortText.cleanSentence(maxCharacters: 80, fallback: "No pressure. This is a normal place to get stuck."),
-                nextSmallStep: decoded.nextSmallStep.cleanSentence(maxCharacters: 120, fallback: "Do only the first visible action for two minutes."),
-                actions: Array(actions)
+                comfortText: decoded.comfortText.cleanLongSentence(maxCharacters: 120, fallback: "No pressure. This is a normal place to get stuck."),
+                nextSmallStep: decoded.nextSmallStep.cleanLongSentence(maxCharacters: 180, fallback: "Do only the first visible action for two minutes."),
+                actions: canonicalStuckHelpActions()
             )
         } catch {
             return stuckHelp(for: request)
@@ -112,7 +107,7 @@ public struct FeedbackAgent: Sendable {
 
     public func difficultyPrompt(for stage: StagePlan) -> DifficultyPrompt {
         DifficultyPrompt(
-            promptText: "Where did this step get sticky?",
+            promptText: "The timer ended. What would help right now?",
             options: [
                 FeedbackOption(label: "Done now", emoji: "✅", intent: .completed),
                 FeedbackOption(label: "+5 min", emoji: "⏱", intent: .needMoreTime),
@@ -123,27 +118,142 @@ public struct FeedbackAgent: Sendable {
     }
 
     public func stuckHelp(for request: StuckHelpRequest) -> StuckHelpResponse {
-        let nextSmallStep: String
-        if request.instruction.lowercased().contains("read") {
-            nextSmallStep = "Read only the last two sentences of this section and underline one useful phrase."
-        } else if request.instruction.lowercased().contains("write") {
-            nextSmallStep = "Write three rough words first. They do not need to become a sentence yet."
-        } else if request.instruction.lowercased().contains("slide") {
-            nextSmallStep = "Put one plain sentence on the slide. Design can wait."
-        } else {
-            nextSmallStep = "Do only the first visible action for two minutes, then stop and check in."
-        }
-
-        return StuckHelpResponse(
+        StuckHelpResponse(
             comfortText: "No pressure. This is a normal place to get stuck.",
-            nextSmallStep: nextSmallStep,
-            actions: [
-                StuckHelpAction(title: "Hint", actionType: .hint),
-                StuckHelpAction(title: "Split", actionType: .splitSmaller),
-                StuckHelpAction(title: "Example", actionType: .example),
-                StuckHelpAction(title: "3-min break", actionType: .shortBreak)
-            ]
+            nextSmallStep: hint(for: request, level: 0),
+            actions: canonicalStuckHelpActions()
         )
+    }
+
+    private func canonicalStuckHelpActions() -> [StuckHelpAction] {
+        [
+            StuckHelpAction(title: "Get a hint", actionType: .hint),
+            StuckHelpAction(title: "See an example", actionType: .example),
+            StuckHelpAction(title: "Split smaller", actionType: .splitSmaller),
+            StuckHelpAction(title: "Short break", actionType: .shortBreak)
+        ]
+    }
+
+    /// Layered, type-aware hint. Level 0 is the gentlest nudge; higher levels are more concrete.
+    public func hint(for request: StuckHelpRequest, level: Int) -> String {
+        let hints = layeredHints(for: request.stageType)
+        let index = min(max(0, level), hints.count - 1)
+        return hints[index]
+    }
+
+    public func hintUsingLLM(for request: StuckHelpRequest, level: Int) async -> String {
+        guard let llmClient else { return hint(for: request, level: level) }
+        do {
+            let content = try await llmClient.complete(
+                messages: [
+                    LLMMessage(role: "system", content: hintSystemPrompt),
+                    LLMMessage(role: "user", content: """
+                    Task: \(request.taskTitle)
+                    Stage: \(request.stageTitle)
+                    Instruction: \(request.instruction)
+                    Stage type: \(request.stageType.rawValue)
+                    Hint level (0 = gentlest, higher = more concrete): \(level)
+                    Give ONE concrete next-action hint for this level. Never solve the whole task.
+                    """)
+                ],
+                privacyMode: .remoteLLMAllowedForCurrentContext,
+                responseFormat: .jsonObject
+            )
+            let decoded = try FocusFlowJSON.decoder.decode(LLMSingleText.self, from: Data(content.utf8))
+            return decoded.text.cleanLongSentence(maxCharacters: 180, fallback: hint(for: request, level: level))
+        } catch {
+            return hint(for: request, level: level)
+        }
+    }
+
+    public func example(for request: StuckHelpRequest) -> String {
+        switch request.stageType {
+        case .writing, .presentationMaking:
+            return "Copy this and fill the blanks roughly: \"In this part I want to say ___ because ___.\""
+        case .reading:
+            return "Try this frame: \"The main point seems to be ___. One detail that supports it is ___.\""
+        case .problemSolving:
+            return "Worked start: write \"Given: ___\" and \"Find: ___\", then attempt only the first line."
+        case .reviewing:
+            return "Recall card: \"Concept ___ means ___ in one sentence.\" Fill it from memory first."
+        case .organizing:
+            return "Starter structure: make \"Bucket A: ___\" and \"Bucket B: ___\", then drop one item in each."
+        case .startup:
+            return "Placeholder line: write \"Goal for the next 2 minutes: ___\" and stop there."
+        default:
+            return "Write a rough placeholder like \"___ (improve later)\" so the page is no longer blank."
+        }
+    }
+
+    public func exampleUsingLLM(for request: StuckHelpRequest) async -> String {
+        guard let llmClient else { return example(for: request) }
+        do {
+            let content = try await llmClient.complete(
+                messages: [
+                    LLMMessage(role: "system", content: exampleSystemPrompt),
+                    LLMMessage(role: "user", content: """
+                    Task: \(request.taskTitle)
+                    Stage: \(request.stageTitle)
+                    Instruction: \(request.instruction)
+                    Stage type: \(request.stageType.rawValue)
+                    Give ONE short copyable example or template with blanks. Do not complete the work.
+                    """)
+                ],
+                privacyMode: .remoteLLMAllowedForCurrentContext,
+                responseFormat: .jsonObject
+            )
+            let decoded = try FocusFlowJSON.decoder.decode(LLMSingleText.self, from: Data(content.utf8))
+            return decoded.text.cleanLongSentence(maxCharacters: 200, fallback: example(for: request))
+        } catch {
+            return example(for: request)
+        }
+    }
+
+    private func layeredHints(for type: StageType) -> [String] {
+        switch type {
+        case .reading:
+            return [
+                "Find just the first sentence that looks important and read only that one.",
+                "Underline one phrase you understand and one word you don't.",
+                "Write a one-line summary of that single paragraph in your own words."
+            ]
+        case .writing, .presentationMaking:
+            return [
+                "Write the first three rough words. They do not need to be a sentence.",
+                "Turn those words into one ugly sentence. Ugly is completely allowed.",
+                "Add one more sentence that just says what should come next."
+            ]
+        case .problemSolving:
+            return [
+                "Write what the question is actually asking, in plain words.",
+                "List what you already know and what is missing.",
+                "Attempt only the very first step of the method, even if unsure."
+            ]
+        case .reviewing:
+            return [
+                "Pick one concept from the page and say it out loud once.",
+                "Cover it and try to recall the single key point.",
+                "Write that one point in your own words on paper."
+            ]
+        case .organizing:
+            return [
+                "Make just one heading or bucket to put things into.",
+                "Drop the first item into that bucket. Only one.",
+                "Add two more items, with no sorting yet."
+            ]
+        case .startup:
+            return [
+                "Open the file or page you need. That is the whole step for now.",
+                "Write a title line or today's date, just to touch the page.",
+                "List one thing you want to do next, in a few words."
+            ]
+        default:
+            return [
+                "Do only the first visible action for one minute.",
+                "Name the very next concrete move in a few words.",
+                "Do that move now, even if it is rough."
+            ]
+        }
     }
 
     private var feedbackSystemPrompt: String {
@@ -161,15 +271,41 @@ public struct FeedbackAgent: Sendable {
         """
         You are FocusFlow's stuck-help agent. Output ONLY valid JSON.
         Help the user return to action without doing the assignment for them.
-        Include one comfort sentence, one 1-3 minute next small step, and four actions.
+        Include one comfort sentence, one 1-3 minute next small step, and exactly four distinct actions.
         Valid action_type values: hint, splitSmaller, example, shortBreak.
+        Return each action_type at most once. Do not repeat hint multiple times.
         Avoid shame, diagnosis, urgency panic, or long text.
         JSON schema:
         {
           "comfort_text":"No pressure. This part can be sticky.",
           "next_small_step":"Read only the last two sentences and underline one phrase.",
-          "actions":[{"title":"Hint","action_type":"hint"}]
+          "actions":[
+            {"title":"Get a hint","action_type":"hint"},
+            {"title":"See an example","action_type":"example"},
+            {"title":"Split smaller","action_type":"splitSmaller"},
+            {"title":"Short break","action_type":"shortBreak"}
+          ]
         }
+        """
+    }
+
+    private var hintSystemPrompt: String {
+        """
+        You are FocusFlow's stuck-help hint agent. Output ONLY valid JSON.
+        Give exactly ONE concrete, doable next-action hint for a student with ADHD traits.
+        Higher hint levels are more concrete, but never finish the assignment for them.
+        Keep it under 30 words, warm, specific, and non-shaming.
+        JSON schema: {"text":"Underline one phrase you understand and one word you don't."}
+        """
+    }
+
+    private var exampleSystemPrompt: String {
+        """
+        You are FocusFlow's stuck-help example agent. Output ONLY valid JSON.
+        Give ONE short copyable example or fill-in-the-blank template for the current step.
+        Use blanks like ___ so the student adapts it. Never complete the actual work.
+        Keep it under 35 words, concrete, and non-shaming.
+        JSON schema: {"text":"Template: \\"In this part I want to say ___ because ___.\\""}
         """
     }
 }
@@ -195,6 +331,10 @@ private struct LLMStuckAction: Decodable {
     let actionType: String
 }
 
+private struct LLMSingleText: Decodable {
+    let text: String
+}
+
 private extension String {
     var cleanFeedbackLabel: String {
         cleanSentence(maxCharacters: 18, fallback: "Done enough")
@@ -213,5 +353,20 @@ private extension String {
         let shortened = words.count > 3 ? words.prefix(3).joined(separator: " ") : trimmed
         if shortened.count <= maxCharacters { return shortened }
         return fallback
+    }
+
+    /// Keeps a full sentence intact. Only filters shaming language and caps length
+    /// at a word boundary, instead of collapsing to three words like `cleanSentence`.
+    func cleanLongSentence(maxCharacters: Int, fallback: String) -> String {
+        let banned = ["lazy", "failure", "failed", "you should", "you must"]
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallback }
+        guard !banned.contains(where: { trimmed.lowercased().contains($0) }) else { return fallback }
+        guard trimmed.count > maxCharacters else { return trimmed }
+        let prefix = trimmed.prefix(maxCharacters)
+        if let lastSpace = prefix.lastIndex(of: " ") {
+            return String(prefix[..<lastSpace]) + "…"
+        }
+        return String(prefix) + "…"
     }
 }

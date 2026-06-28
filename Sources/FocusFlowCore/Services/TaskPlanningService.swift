@@ -38,13 +38,40 @@ public struct TaskPlanningService: TaskPlanningServiceProtocol {
                 )
             }
         )
-        guard !draft.task.stages.isEmpty else {
+        guard !draft.clarificationQuestions.isEmpty || !draft.task.stages.isEmpty else {
             throw FocusFlowError.nonEducationalTask
         }
         return draft
     }
 
+    public func continuePlanning(context: TaskPlanningContext, agentContext: AgentContext?) async throws -> TaskPlanDraft {
+        let privacyMode: PrivacyMode = agentContext?.privacyMode == .profileDisabled ? .profileDisabled : .remoteLLMAllowedForCurrentContext
+        let draft = try await agentRunLogger.run(
+            agentName: "TaskBreakdownAgent",
+            purpose: "continue_task_planning",
+            sourceModule: .module1TaskPlanning,
+            privacyMode: privacyMode,
+            outputSummary: { draft in
+                "stages=\(draft.task.stages.count); questions=\(draft.clarificationQuestions.count); mode=\(draft.task.metadata["planning_mode"] ?? "unknown")"
+            },
+            operation: {
+                await agent.continuePlanningUsingLLM(
+                    context: context,
+                    agentContext: agentContext,
+                    privacyMode: privacyMode
+                )
+            }
+        )
+        guard !draft.clarificationQuestions.isEmpty || !draft.task.stages.isEmpty else {
+            throw FocusFlowError.invalidState("Planning did not produce a usable plan or follow-up question.")
+        }
+        return draft
+    }
+
     public func acceptDraft(_ draft: TaskPlanDraft, clarificationAnswer: String? = nil) async throws -> TaskPlan {
+        guard !draft.task.stages.isEmpty else {
+            throw FocusFlowError.invalidState("The plan is not ready yet. Answer the follow-up question first.")
+        }
         var task = draft.task
         if let clarificationAnswer, !clarificationAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             task.metadata["clarification_answer"] = clarificationAnswer

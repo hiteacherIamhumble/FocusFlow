@@ -29,10 +29,18 @@ final class FocusFlowCoreTests: XCTestCase {
         let tasksBeforeAccept = try await repository.listTasks()
 
         XCTAssertFalse(draft.clarificationQuestions.isEmpty)
+        XCTAssertTrue(draft.task.stages.isEmpty)
         XCTAssertEqual(tasksBeforeAccept.count, 0)
         XCTAssertFalse(beforeAcceptJSON.contains("taskCreated"))
 
-        let task = try await service.acceptDraft(draft, clarificationAnswer: "The easiest")
+        let continued = try await service.continuePlanning(
+            context: TaskPlanningContext(
+                rawInput: "study",
+                turns: [TaskPlanningTurn(question: draft.clarificationQuestions[0].question, answer: "The easiest")]
+            ),
+            agentContext: nil
+        )
+        let task = try await service.acceptDraft(continued, clarificationAnswer: "The easiest")
         let afterAcceptJSON = try await dataCenter.exportEventsJSON()
         let tasksAfterAccept = try await repository.listTasks()
 
@@ -50,7 +58,10 @@ final class FocusFlowCoreTests: XCTestCase {
         let eventBus = AppEventBus(dataCenter: dataCenter)
         let service = TaskPlanningService(repository: repository, eventBus: eventBus)
 
-        let draft = try await service.createDraft(from: "Read a paper for class", agentContext: nil)
+        let draft = try await service.createDraft(
+            from: "Read Smith 2024 paper on neural networks for BIO 101 due Friday",
+            agentContext: nil
+        )
         let json = try await dataCenter.exportEventsJSON()
 
         XCTAssertFalse(draft.task.stages.isEmpty)
@@ -432,7 +443,10 @@ final class FocusFlowCoreTests: XCTestCase {
         let feedback = FeedbackOptimizationService(repository: repository, eventBus: eventBus)
         let closure = TaskClosureService(repository: repository, dataCenter: dataCenter, eventBus: eventBus)
 
-        let draft = try await planning.createDraft(from: "Read one paper for class", agentContext: nil)
+        let draft = try await planning.createDraft(
+            from: "Read Smith 2024 paper on neural networks for BIO 101 due Friday",
+            agentContext: nil
+        )
         let task = try await planning.acceptDraft(draft, clarificationAnswer: nil)
         try await planning.confirmPlan(task)
         try await execution.startTask(task.id)
@@ -898,8 +912,8 @@ final class FocusFlowCoreTests: XCTestCase {
 
         let loaded = try FocusFlowJSON.decoder.decode(FocusFlowSettings.self, from: Data(json.utf8))
 
-        XCTAssertTrue(FocusFlowSettings.defaults.localEncryptionEnabled)
-        XCTAssertTrue(loaded.localEncryptionEnabled)
+        XCTAssertFalse(FocusFlowSettings.defaults.localEncryptionEnabled)
+        XCTAssertFalse(loaded.localEncryptionEnabled)
     }
 
     func testAppReadinessReportFlagsRequiredAndOptionalCapabilities() throws {
@@ -927,7 +941,7 @@ final class FocusFlowCoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(report.attentionCount, 4)
         XCTAssertEqual(report.items.first(where: { $0.id == "local_data" })?.state, .ready)
         XCTAssertEqual(report.items.first(where: { $0.id == "deepseek" })?.state, .needsAttention)
-        XCTAssertEqual(report.items.first(where: { $0.id == "local_encryption" })?.state, .ready)
+        XCTAssertEqual(report.items.first(where: { $0.id == "local_encryption" })?.state, .off)
         XCTAssertEqual(report.items.first(where: { $0.id == "notifications" })?.state, .needsAttention)
         XCTAssertEqual(report.items.first(where: { $0.id == "shortcuts" })?.state, .needsAttention)
         XCTAssertEqual(report.items.first(where: { $0.id == "voice_input" })?.state, .needsAttention)
@@ -1861,21 +1875,62 @@ final class FocusFlowCoreTests: XCTestCase {
         let service = ExecutionService(repository: repository, runtimeStore: runtimeStore, eventBus: eventBus)
         let task = sampleTask()
         try await repository.save(task)
-        try await service.startTask(task.id)
+        try await runtimeStore.save(StageRuntime(
+            taskId: task.id,
+            stageId: task.stages[0].id,
+            status: .running,
+            startedAt: Date().addingTimeInterval(-240),
+            pauseStartedAt: nil,
+            pauseTotalSeconds: 0,
+            plannedSeconds: 300,
+            monotonicAnchor: ProcessInfo.processInfo.systemUptime - 240
+        ))
 
-        let activeBefore = try await service.activeRuntime()
-        let before = try XCTUnwrap(activeBefore)
+        let beforeValue = try await service.remainingSeconds()
+        let before = try XCTUnwrap(beforeValue)
+        XCTAssertEqual(before, 60)
+
         let extended = try await service.extendCurrentStage(seconds: 300, trigger: .user)
         let remainingValue = try await service.remainingSeconds()
         let remaining = try XCTUnwrap(remainingValue)
         let stored = try await repository.getTask(task.id)
         let json = try await dataCenter.exportEventsJSON()
 
-        XCTAssertEqual(extended.plannedSeconds, before.plannedSeconds + 300)
-        XCTAssertGreaterThanOrEqual(remaining, before.plannedSeconds + 295)
+        XCTAssertEqual(extended.plannedSeconds, 600)
+        XCTAssertGreaterThanOrEqual(remaining, 355)
+        XCTAssertLessThanOrEqual(remaining, 365)
         XCTAssertEqual(stored.stages[0].estimatedSeconds, extended.plannedSeconds)
         XCTAssertTrue(json.contains("\"event_type\":\"runtimeExtended\"") || json.contains("\"event_type\" : \"runtimeExtended\""))
         XCTAssertTrue(json.contains("\"added_seconds\":\"300\"") || json.contains("\"added_seconds\" : \"300\""))
+    }
+
+    func testEnterOvertimeWhenRemainingTimeExpires() async throws {
+        let directory = try temporaryDirectory()
+        let root = LocalDataDirectory(root: directory)
+        let dataCenter = LocalDataCenterService(directory: root)
+        let repository = LocalTaskRepository(directory: root)
+        let runtimeStore = LocalRuntimeStore(directory: root)
+        let eventBus = AppEventBus(dataCenter: dataCenter)
+        let service = ExecutionService(repository: repository, runtimeStore: runtimeStore, eventBus: eventBus)
+        let task = sampleTask()
+        try await repository.save(task)
+        try await runtimeStore.save(StageRuntime(
+            taskId: task.id,
+            stageId: task.stages[0].id,
+            status: .running,
+            startedAt: Date().addingTimeInterval(-360),
+            pauseStartedAt: nil,
+            pauseTotalSeconds: 0,
+            plannedSeconds: 300
+        ))
+
+        let entered = try await service.enterOvertimeIfNeeded()
+        let runtime = try await runtimeStore.loadActiveRuntime()
+        let stored = try await repository.getTask(task.id)
+
+        XCTAssertTrue(entered)
+        XCTAssertEqual(runtime?.status, .overtime)
+        XCTAssertEqual(stored.stages[0].status, .overtime)
     }
 
     func testRetryQueueCapturesFailedEventWritesAndReplaysWithoutDuplication() async throws {

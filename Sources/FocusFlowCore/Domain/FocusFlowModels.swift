@@ -703,6 +703,42 @@ public enum SensitivityLevel: String, Codable, Sendable {
     case high
 }
 
+public struct TaskPlanningTurn: Codable, Equatable, Sendable {
+    public let question: String
+    public let answer: String
+
+    public init(question: String, answer: String) {
+        self.question = question
+        self.answer = answer
+    }
+}
+
+public struct TaskPlanningAttachment: Codable, Equatable, Sendable {
+    public let fileName: String
+    public let extractedText: String
+
+    public init(fileName: String, extractedText: String) {
+        self.fileName = fileName
+        self.extractedText = extractedText
+    }
+}
+
+public struct TaskPlanningContext: Codable, Equatable, Sendable {
+    public let rawInput: String
+    public let turns: [TaskPlanningTurn]
+    public let attachments: [TaskPlanningAttachment]
+
+    public init(
+        rawInput: String,
+        turns: [TaskPlanningTurn] = [],
+        attachments: [TaskPlanningAttachment] = []
+    ) {
+        self.rawInput = rawInput
+        self.turns = turns
+        self.attachments = attachments
+    }
+}
+
 public struct TaskInputRequest: Codable, Equatable, Sendable {
     public let rawInput: String
     public let createdAt: Date
@@ -737,14 +773,60 @@ public struct TaskPlanDraft: Codable, Equatable, Sendable {
 public struct ClarificationQuestion: Codable, Identifiable, Equatable, Sendable {
     public let id: String
     public let question: String
-    public let options: [String]
+    public let placeholder: String?
+    public let hintOptions: [String]
+    public let allowsFileUpload: Bool
     public let skippable: Bool
 
-    public init(id: String = FocusFlowID.make("question"), question: String, options: [String], skippable: Bool) {
+    /// Legacy alias used by older UI code paths.
+    public var options: [String] { hintOptions }
+
+    public init(
+        id: String = FocusFlowID.make("question"),
+        question: String,
+        placeholder: String? = nil,
+        hintOptions: [String] = [],
+        allowsFileUpload: Bool = false,
+        skippable: Bool = true
+    ) {
         self.id = id
         self.question = question
-        self.options = options
+        self.placeholder = placeholder
+        self.hintOptions = hintOptions
+        self.allowsFileUpload = allowsFileUpload
         self.skippable = skippable
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case question
+        case placeholder
+        case hintOptions
+        case options
+        case allowsFileUpload
+        case skippable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? FocusFlowID.make("question")
+        question = try container.decode(String.self, forKey: .question)
+        placeholder = try container.decodeIfPresent(String.self, forKey: .placeholder)
+        hintOptions = try container.decodeIfPresent([String].self, forKey: .hintOptions)
+            ?? container.decodeIfPresent([String].self, forKey: .options)
+            ?? []
+        allowsFileUpload = try container.decodeIfPresent(Bool.self, forKey: .allowsFileUpload) ?? false
+        skippable = try container.decodeIfPresent(Bool.self, forKey: .skippable) ?? true
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(question, forKey: .question)
+        try container.encodeIfPresent(placeholder, forKey: .placeholder)
+        try container.encode(hintOptions, forKey: .hintOptions)
+        try container.encode(allowsFileUpload, forKey: .allowsFileUpload)
+        try container.encode(skippable, forKey: .skippable)
     }
 }
 
@@ -838,6 +920,7 @@ public struct StuckHelpRequest: Codable, Equatable, Sendable {
     public let taskTitle: String
     public let stageTitle: String
     public let instruction: String
+    public let stageType: StageType
     public let plannedSeconds: Int
     public let elapsedSeconds: Int
     public let trigger: StuckTrigger
@@ -848,6 +931,7 @@ public struct StuckHelpRequest: Codable, Equatable, Sendable {
         taskTitle: String,
         stageTitle: String,
         instruction: String,
+        stageType: StageType = .other,
         plannedSeconds: Int,
         elapsedSeconds: Int,
         trigger: StuckTrigger
@@ -857,6 +941,7 @@ public struct StuckHelpRequest: Codable, Equatable, Sendable {
         self.taskTitle = taskTitle
         self.stageTitle = stageTitle
         self.instruction = instruction
+        self.stageType = stageType
         self.plannedSeconds = plannedSeconds
         self.elapsedSeconds = elapsedSeconds
         self.trigger = trigger
@@ -1250,7 +1335,7 @@ public struct FocusFlowSettings: Codable, Equatable, Sendable {
         achievementsToastEnabled: Bool = true,
         profileLearningEnabled: Bool = true,
         remoteAgentEnabled: Bool = true,
-        localEncryptionEnabled: Bool = true,
+        localEncryptionEnabled: Bool = false,
         privacyMode: PrivacyMode = .remoteLLMAllowedForCurrentContext,
         shortcutKeys: FocusFlowShortcutSettings = .defaults
     ) {
@@ -1303,7 +1388,7 @@ public struct FocusFlowSettings: Codable, Equatable, Sendable {
             achievementsToastEnabled: try container.decodeIfPresent(Bool.self, forKey: .achievementsToastEnabled) ?? true,
             profileLearningEnabled: try container.decodeIfPresent(Bool.self, forKey: .profileLearningEnabled) ?? true,
             remoteAgentEnabled: try container.decodeIfPresent(Bool.self, forKey: .remoteAgentEnabled) ?? true,
-            localEncryptionEnabled: try container.decodeIfPresent(Bool.self, forKey: .localEncryptionEnabled) ?? true,
+            localEncryptionEnabled: try container.decodeIfPresent(Bool.self, forKey: .localEncryptionEnabled) ?? false,
             privacyMode: try container.decodeIfPresent(PrivacyMode.self, forKey: .privacyMode) ?? .remoteLLMAllowedForCurrentContext,
             shortcutKeys: try container.decodeIfPresent(FocusFlowShortcutSettings.self, forKey: .shortcutKeys) ?? .defaults
         )

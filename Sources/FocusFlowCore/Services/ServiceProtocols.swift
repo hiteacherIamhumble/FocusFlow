@@ -2,6 +2,7 @@ import Foundation
 
 public protocol TaskPlanningServiceProtocol: Sendable {
     func createDraft(from input: String, agentContext: AgentContext?) async throws -> TaskPlanDraft
+    func continuePlanning(context: TaskPlanningContext, agentContext: AgentContext?) async throws -> TaskPlanDraft
     func acceptDraft(_ draft: TaskPlanDraft, clarificationAnswer: String?) async throws -> TaskPlan
     func createPlan(from input: String, context: UserProfileSnapshot?) async throws -> TaskPlan
     func createPlan(from input: String, agentContext: AgentContext?) async throws -> TaskPlan
@@ -30,6 +31,8 @@ public protocol FeedbackOptimizationServiceProtocol: Sendable {
     func submitFeedback(_ feedback: StageFeedback) async throws -> FeedbackOptimizationResult
     func handleTimeoutDifficulty(taskId: String, stageId: String, runtime: StageRuntime) async throws -> DifficultyPrompt
     func generateStuckHelp(_ request: StuckHelpRequest) async throws -> StuckHelpResponse
+    func generateHint(_ request: StuckHelpRequest, level: Int) async throws -> String
+    func generateExample(_ request: StuckHelpRequest) async throws -> String
 }
 
 public protocol TaskClosureServiceProtocol: Sendable {

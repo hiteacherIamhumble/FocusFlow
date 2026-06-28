@@ -94,18 +94,37 @@ struct RootView: View {
     @ViewBuilder
     private var content: some View {
         switch model.route {
-        case .input:
-            TaskInputView()
+        case .home:
+            HomeView()
+        case .input, .plan, .execution, .closure:
+            VStack(spacing: 0) {
+                FlowStepIndicator(currentRoute: model.route) { step in
+                    model.goToFlowStep(step)
+                }
+                Divider()
+                flowBody
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .personalCenter:
+            PersonalCenterView()
+        case .history:
+            HistoryView()
+        case .settings:
+            SettingsView()
+        }
+    }
+
+    @ViewBuilder
+    private var flowBody: some View {
+        switch model.route {
         case .plan:
             PlanPreviewView()
         case .execution:
             ExecutionCenterView()
         case .closure:
             ClosureView()
-        case .personalCenter:
-            PersonalCenterView()
-        case .settings:
-            SettingsView()
+        default:
+            TaskInputView()
         }
     }
 }
@@ -125,10 +144,10 @@ struct Sidebar: View {
             }
             .padding(.bottom, 12)
 
-            NavButton(title: "Start", systemImage: "sparkle.magnifyingglass", route: .input)
-            NavButton(title: "Current", systemImage: "timer", route: .execution)
-            NavButton(title: "Personal", systemImage: "chart.line.uptrend.xyaxis", route: .personalCenter)
-            NavButton(title: "Settings", systemImage: "gearshape", route: .settings)
+            NavButton(title: "Home", systemImage: "house", tab: .home)
+            NavButton(title: "Focus", systemImage: "timer", tab: .focus)
+            NavButton(title: "Insights", systemImage: "chart.line.uptrend.xyaxis", tab: .insights)
+            NavButton(title: "Settings", systemImage: "gearshape", tab: .settings)
 
             Spacer()
             Text("Local-first. No diagnosis. No shame loops.")
@@ -146,24 +165,25 @@ struct NavButton: View {
     @EnvironmentObject private var model: FocusFlowAppModel
     let title: String
     let systemImage: String
-    let route: FocusFlowAppModel.Route
+    let tab: FocusFlowAppModel.NavTab
+
+    private var isActive: Bool { model.activeTab == tab }
 
     var body: some View {
         Button {
-            model.route = route
-            if route == .personalCenter {
-                Task { await model.refreshStats() }
-            }
+            model.selectTab(tab)
         } label: {
             Label(title, systemImage: systemImage)
                 .font(.body.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(model.route == route ? AppColor.actionPrimary.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                .background(isActive ? AppColor.actionPrimary.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
-        .foregroundStyle(model.route == route ? AppColor.actionPrimary : AppColor.textPrimary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(isActive ? AppColor.actionPrimary : AppColor.textPrimary)
         .accessibilityIdentifier("nav_\(title.lowercased())")
     }
 }

@@ -2,24 +2,26 @@ import AppKit
 import SwiftUI
 
 enum AppColor {
-    static let bgBase = adaptive(light: "#F7F4EF", dark: "#151A1E")
-    static let surfaceCard = adaptive(light: "#FEFCF8", dark: "#1F252B")
-    static let surfaceSubtle = adaptive(light: "#ECE7DF", dark: "#29323A")
-    static let textPrimary = adaptive(light: "#24313A", dark: "#F1F4F5")
-    static let textSecondary = adaptive(light: "#56636E", dark: "#B8C2CA")
-    static let borderSubtle = adaptive(light: "#D8D2C9", dark: "#3A444D")
-    static let actionPrimary = adaptive(light: "#3F6F8C", dark: "#8DBDD3")
-    static let actionOnPrimary = adaptive(light: "#FFFFFF", dark: "#102631")
-    static let actionContainer = adaptive(light: "#D7E7EE", dark: "#263D4A")
-    static let actionOnContainer = adaptive(light: "#163445", dark: "#F1F4F5")
-    static let focusRing = adaptive(light: "#7259A3", dark: "#B7A6E3")
-    static let success = adaptive(light: "#2F7D68", dark: "#7CCCB4")
-    static let warning = adaptive(light: "#8A5A10", dark: "#E0B56B")
-    static let error = adaptive(light: "#A84D4D", dark: "#E18A8A")
-    static let chipReading = adaptive(light: "#DCEAF2", dark: "#263D4A")
-    static let chipPractice = adaptive(light: "#DDEBE4", dark: "#263F36")
-    static let chipMemory = adaptive(light: "#E6E0F2", dark: "#39324B")
-    static let chipBreak = adaptive(light: "#EFE5D4", dark: "#4A3C27")
+    static let bgBase = adaptive(light: "#F7F4ED", dark: "#15181E")
+    static let surfaceCard = adaptive(light: "#FFFDF9", dark: "#1F242C")
+    static let surfaceSubtle = adaptive(light: "#EFEBE1", dark: "#28303A")
+    static let textPrimary = adaptive(light: "#2F3440", dark: "#F1F3F6")
+    static let textSecondary = adaptive(light: "#8A8F98", dark: "#AEB6C0")
+    static let borderSubtle = adaptive(light: "#E0DACF", dark: "#39424D")
+    static let actionPrimary = adaptive(light: "#5B7CFA", dark: "#8AA2FB")
+    static let actionOnPrimary = adaptive(light: "#FFFFFF", dark: "#0E1740")
+    static let actionContainer = adaptive(light: "#E6ECFF", dark: "#27324F")
+    static let actionOnContainer = adaptive(light: "#26336E", dark: "#E6ECFF")
+    static let focusRing = adaptive(light: "#3A5BD9", dark: "#A9BBFC")
+    static let success = adaptive(light: "#5BAF85", dark: "#7BC99A")
+    static let peach = adaptive(light: "#F2A24C", dark: "#FFB86B")
+    static let calmLavender = adaptive(light: "#EEE9FF", dark: "#2E2A44")
+    static let warning = adaptive(light: "#B07A2E", dark: "#E0B56B")
+    static let error = adaptive(light: "#C46A6A", dark: "#E18A8A")
+    static let chipReading = adaptive(light: "#E1E8FF", dark: "#27324F")
+    static let chipPractice = adaptive(light: "#DDEEE4", dark: "#22392F")
+    static let chipMemory = adaptive(light: "#EEE9FF", dark: "#332E49")
+    static let chipBreak = adaptive(light: "#FCEBD4", dark: "#43361F")
 
     private static func adaptive(light: String, dark: String) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
@@ -69,6 +71,27 @@ struct SecondaryButtonStyle: ButtonStyle {
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
             .frame(minHeight: 42)
+            .background(
+                AppColor.surfaceCard.opacity(configuration.isPressed ? 0.70 : 0.96),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(AppColor.borderSubtle, lineWidth: 1)
+            )
+    }
+}
+
+struct CompactSecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(isEnabled ? AppColor.textPrimary : AppColor.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(minHeight: 34)
             .background(
                 AppColor.surfaceCard.opacity(configuration.isPressed ? 0.70 : 0.96),
                 in: RoundedRectangle(cornerRadius: 8)
@@ -140,6 +163,45 @@ extension View {
             .padding(padding)
             .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.borderSubtle.opacity(0.45)))
+    }
+
+    func lavenderPanel(padding: CGFloat = 18) -> some View {
+        self
+            .padding(padding)
+            .background(AppColor.calmLavender, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.focusRing.opacity(0.18)))
+    }
+
+    func gentleSheet(maxWidth: CGFloat = 520) -> some View {
+        self
+            .padding(24)
+            .frame(maxWidth: maxWidth)
+            .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppColor.borderSubtle.opacity(0.6)))
+            .shadow(color: .black.opacity(0.16), radius: 28, y: 12)
+    }
+}
+
+struct AchievementBadge: View {
+    let title: String
+    let iconName: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: iconName)
+                .font(.title2)
+                .foregroundStyle(AppColor.peach)
+                .frame(width: 52, height: 52)
+                .background(AppColor.peach.opacity(0.16), in: Circle())
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppColor.textPrimary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+        }
+        .frame(width: 96)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Achievement: \(title)")
     }
 }
 

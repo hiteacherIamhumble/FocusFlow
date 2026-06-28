@@ -7,7 +7,7 @@ struct SettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Settings")
                         .font(AppFont.pageTitle)
@@ -16,8 +16,9 @@ struct SettingsView: View {
                         .font(.title3)
                         .foregroundStyle(AppColor.textSecondary)
                 }
+                .padding(.bottom, 4)
 
-                settingsGroup("System readiness") {
+                SettingsSection("System readiness", initiallyExpanded: true) {
                     HStack(spacing: 10) {
                         Image(systemName: model.readinessReport.isPrototypeReady ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                             .foregroundStyle(model.readinessReport.isPrototypeReady ? AppColor.success : AppColor.warning)
@@ -59,7 +60,7 @@ struct SettingsView: View {
                     }
                 }
 
-                settingsGroup("Focus support") {
+                SettingsSection("Focus support", initiallyExpanded: true) {
                     Toggle("System notifications", isOn: $model.settings.notificationsEnabled)
                     ViewThatFits(in: .horizontal) {
                         HStack {
@@ -101,12 +102,12 @@ struct SettingsView: View {
                     .buttonStyle(SecondaryButtonStyle())
                 }
 
-                settingsGroup("Privacy") {
+                SettingsSection("Privacy & data") {
                     Toggle("Local profile learning", isOn: $model.settings.profileLearningEnabled)
-                    Toggle("Local encryption", isOn: $model.settings.localEncryptionEnabled)
-                    Text("When enabled, new task, runtime, history, profile, achievement, and closure files are encrypted with a Keychain-backed key.")
+                    Label("Local encryption is off. Learning data stays as plain JSON on this Mac.", systemImage: "lock.open")
                         .font(.callout)
                         .foregroundStyle(AppColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Toggle("Remote agent personalization", isOn: $model.settings.remoteAgentEnabled)
                     Text("FocusFlow stores learning events locally under Application Support. It does not record screenshots, keystrokes, page text, or medical diagnoses.")
                         .font(.callout)
@@ -155,7 +156,7 @@ struct SettingsView: View {
                     }
                 }
 
-                settingsGroup("Remote agent") {
+                SettingsSection("Remote agent") {
                     Text(model.remoteAgentStatus)
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(AppColor.textPrimary)
@@ -181,7 +182,7 @@ struct SettingsView: View {
                     .buttonStyle(SecondaryButtonStyle())
                 }
 
-                settingsGroup("Shortcuts") {
+                SettingsSection("Shortcuts") {
                     Toggle("Global shortcuts", isOn: $model.settings.globalShortcutsEnabled)
                     Text(model.hotKeyStatus)
                         .font(.callout)
@@ -203,21 +204,6 @@ struct SettingsView: View {
             }
             .padding(42)
         }
-    }
-
-    @ViewBuilder
-    private func settingsGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(AppColor.textPrimary)
-            content()
-                .font(.body)
-                .foregroundStyle(AppColor.textPrimary)
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func shortcutPicker(_ label: String, key: Binding<String>) -> some View {
@@ -299,5 +285,53 @@ struct SettingsView: View {
         case .off:
             return AppColor.textSecondary
         }
+    }
+}
+
+struct SettingsSection<Content: View>: View {
+    @State private var expanded: Bool
+    private let title: String
+    private let content: Content
+
+    init(_ title: String, initiallyExpanded: Bool = false, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self._expanded = State(initialValue: initiallyExpanded)
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    expanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(AppColor.textPrimary)
+                    Spacer()
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppColor.textSecondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("settings_section_\(title.lowercased().replacingOccurrences(of: " ", with: "_"))")
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 14) {
+                    content
+                        .font(.body)
+                        .foregroundStyle(AppColor.textPrimary)
+                }
+                .padding(.top, 16)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.borderSubtle.opacity(0.6)))
     }
 }
