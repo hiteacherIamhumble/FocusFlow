@@ -9,7 +9,7 @@ STRICT_CLICK="${FOCUSFLOW_UI_STRICT_CLICK:-0}"
 PID=""
 
 mkdir -p "$DATA_ROOT/settings"
-printf '{"local_encryption_enabled":false}\n' >"$DATA_ROOT/settings/privacy.json"
+printf '{"localEncryptionEnabled":false,"hasCompletedOnboarding":true}\n' >"$DATA_ROOT/settings/privacy.json"
 
 cleanup() {
   if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then

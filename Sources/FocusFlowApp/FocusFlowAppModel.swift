@@ -50,6 +50,20 @@ struct PlanningAttachment: Identifiable, Equatable {
 
 @MainActor
 final class FocusFlowAppModel: ObservableObject {
+    enum OnboardingStep: Int, CaseIterable {
+        case welcome
+        case startFocus
+        case planReview
+        case focusSession
+        case saveForLater
+        case insights
+        case settings
+
+        var numberText: String {
+            "\(rawValue + 1) of \(Self.allCases.count)"
+        }
+    }
+
     enum Route {
         case home
         case input
@@ -116,6 +130,7 @@ final class FocusFlowAppModel: ObservableObject {
     @Published var hotKeyStatus = "Global shortcuts are ready."
     @Published var readinessReport = AppReadinessReport.empty
     @Published var settings = FocusFlowSettings.defaults
+    @Published var onboardingStep: OnboardingStep?
     @Published var deepSeekAPIKeyDraft = ""
     @Published var isListeningForVoice = false
     @Published var voiceTranscript = ""
@@ -124,6 +139,7 @@ final class FocusFlowAppModel: ObservableObject {
         text: "I am still learning your study rhythm. We will keep using small, clear starts for now.",
         confidence: 0.2
     )
+    private var onboardingPreviewTaskId: String?
 
     var deletableHistoryDay: String? {
         selectedHistoryDetail?.latestLocalDay ?? history.first?.localDay
@@ -131,6 +147,10 @@ final class FocusFlowAppModel: ObservableObject {
 
     var availableVoiceOptions: [SpeechSynthesisService.VoiceOption] {
         SpeechSynthesisService.availableEnglishVoices()
+    }
+
+    var isOnboardingExecutionTourStep: Bool {
+        onboardingStep == .focusSession || onboardingStep == .saveForLater
     }
 
     func originalStages(for update: StageUpdate) -> [StagePlan] {
@@ -250,6 +270,7 @@ final class FocusFlowAppModel: ObservableObject {
             }
             await refreshStats()
             await refreshReadiness()
+            presentOnboardingIfNeeded()
         }
     }
 
@@ -1608,6 +1629,135 @@ final class FocusFlowAppModel: ObservableObject {
         }
     }
 
+    func presentOnboardingIfNeeded() {
+        guard !settings.hasCompletedOnboarding else { return }
+        startOnboarding()
+    }
+
+    func startOnboarding() {
+        onboardingStep = .welcome
+        applyOnboardingRoute(.welcome)
+    }
+
+    func advanceOnboarding() {
+        guard let step = onboardingStep else {
+            startOnboarding()
+            return
+        }
+        let nextIndex = step.rawValue + 1
+        guard nextIndex < OnboardingStep.allCases.count,
+              let next = OnboardingStep(rawValue: nextIndex) else {
+            completeOnboarding()
+            return
+        }
+        onboardingStep = next
+        applyOnboardingRoute(next)
+    }
+
+    func goBackOnboarding() {
+        guard let step = onboardingStep, step.rawValue > 0,
+              let previous = OnboardingStep(rawValue: step.rawValue - 1) else { return }
+        onboardingStep = previous
+        applyOnboardingRoute(previous)
+    }
+
+    func completeOnboarding() {
+        clearOnboardingPreviewTask()
+        onboardingStep = nil
+        settings.hasCompletedOnboarding = true
+        syncFloatingExecutionWindow()
+        Task { @MainActor in
+            try? await settingsService.saveSettings(settings)
+        }
+    }
+
+    private func applyOnboardingRoute(_ step: OnboardingStep) {
+        switch step {
+        case .welcome:
+            clearOnboardingPreviewTask()
+            route = .home
+        case .startFocus, .planReview:
+            clearOnboardingPreviewTask()
+            route = .input
+        case .focusSession, .saveForLater:
+            if currentTask == nil {
+                currentTask = makeOnboardingPreviewTask()
+                onboardingPreviewTaskId = currentTask?.id
+            }
+            route = .execution
+            if onboardingPreviewTaskId == nil {
+                syncFloatingExecutionWindow()
+            }
+        case .insights:
+            clearOnboardingPreviewTask()
+            route = .personalCenter
+            Task { await refreshStats() }
+        case .settings:
+            clearOnboardingPreviewTask()
+            route = .settings
+        }
+        syncFloatingExecutionWindow()
+    }
+
+    private func clearOnboardingPreviewTask() {
+        guard let previewId = onboardingPreviewTaskId else { return }
+        if currentTask?.id == previewId {
+            currentTask = nil
+        }
+        onboardingPreviewTaskId = nil
+    }
+
+    private func makeOnboardingPreviewTask() -> TaskPlan {
+        let taskId = FocusFlowID.make("tutorial_task")
+        return TaskPlan(
+            id: taskId,
+            originalInput: "Preview: read one short article for class",
+            title: "Preview: read one short article",
+            taskType: .reading,
+            status: .active,
+            estimatedTotalSeconds: 900,
+            stages: [
+                StagePlan(
+                    taskId: taskId,
+                    order: 1,
+                    title: "Open the article and read the first paragraph",
+                    instruction: "Only read the first paragraph. Stop before it turns into the whole assignment.",
+                    completionCriteria: "The first paragraph is read and one useful phrase is noticed.",
+                    stageType: .reading,
+                    estimatedSeconds: 300,
+                    status: .running,
+                    createdBy: .module1TaskPlanning
+                ),
+                StagePlan(
+                    taskId: taskId,
+                    order: 2,
+                    title: "Write one sentence about the main idea",
+                    instruction: "Use plain language. One sentence is enough.",
+                    completionCriteria: "One sentence is written.",
+                    stageType: .writing,
+                    estimatedSeconds: 300,
+                    status: .idle,
+                    createdBy: .module1TaskPlanning
+                ),
+                StagePlan(
+                    taskId: taskId,
+                    order: 3,
+                    title: "Save a next-step note",
+                    instruction: "Write where you would continue next time.",
+                    completionCriteria: "A next-step note exists.",
+                    stageType: .reviewing,
+                    estimatedSeconds: 300,
+                    status: .idle,
+                    createdBy: .module1TaskPlanning
+                )
+            ],
+            metadata: [
+                "tutorial_preview": "true",
+                "planning_mode": "preview"
+            ]
+        )
+    }
+
     var hasResumableTask: Bool {
         guard let task = currentTask else { return false }
         return isUncompletedTask(task)
@@ -1891,7 +2041,7 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     private func syncFloatingExecutionWindow() {
-        guard route == .execution, currentTask != nil else {
+        guard route == .execution, currentTask != nil, onboardingStep == nil, onboardingPreviewTaskId == nil else {
             floatingController.hide()
             return
         }

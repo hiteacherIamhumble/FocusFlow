@@ -7,6 +7,8 @@ struct ExecutionCenterView: View {
     var body: some View {
         if model.currentTask == nil {
             EmptyExecutionView()
+        } else if model.isOnboardingExecutionTourStep {
+            ExecutionWorkspaceView()
         } else {
             ExecutionCompanionView()
         }

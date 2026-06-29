@@ -1320,6 +1320,7 @@ public struct FocusFlowSettings: Codable, Equatable, Sendable {
     public var profileLearningEnabled: Bool
     public var remoteAgentEnabled: Bool
     public var localEncryptionEnabled: Bool
+    public var hasCompletedOnboarding: Bool
     public var privacyMode: PrivacyMode
     public var shortcutKeys: FocusFlowShortcutSettings
 
@@ -1336,6 +1337,7 @@ public struct FocusFlowSettings: Codable, Equatable, Sendable {
         profileLearningEnabled: Bool = true,
         remoteAgentEnabled: Bool = true,
         localEncryptionEnabled: Bool = false,
+        hasCompletedOnboarding: Bool = false,
         privacyMode: PrivacyMode = .remoteLLMAllowedForCurrentContext,
         shortcutKeys: FocusFlowShortcutSettings = .defaults
     ) {
@@ -1351,6 +1353,7 @@ public struct FocusFlowSettings: Codable, Equatable, Sendable {
         self.profileLearningEnabled = profileLearningEnabled
         self.remoteAgentEnabled = remoteAgentEnabled
         self.localEncryptionEnabled = localEncryptionEnabled
+        self.hasCompletedOnboarding = hasCompletedOnboarding
         self.privacyMode = privacyMode
         self.shortcutKeys = shortcutKeys
     }
@@ -1370,6 +1373,7 @@ public struct FocusFlowSettings: Codable, Equatable, Sendable {
         case profileLearningEnabled
         case remoteAgentEnabled
         case localEncryptionEnabled
+        case hasCompletedOnboarding
         case privacyMode
         case shortcutKeys
     }
@@ -1389,6 +1393,7 @@ public struct FocusFlowSettings: Codable, Equatable, Sendable {
             profileLearningEnabled: try container.decodeIfPresent(Bool.self, forKey: .profileLearningEnabled) ?? true,
             remoteAgentEnabled: try container.decodeIfPresent(Bool.self, forKey: .remoteAgentEnabled) ?? true,
             localEncryptionEnabled: try container.decodeIfPresent(Bool.self, forKey: .localEncryptionEnabled) ?? false,
+            hasCompletedOnboarding: try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false,
             privacyMode: try container.decodeIfPresent(PrivacyMode.self, forKey: .privacyMode) ?? .remoteLLMAllowedForCurrentContext,
             shortcutKeys: try container.decodeIfPresent(FocusFlowShortcutSettings.self, forKey: .shortcutKeys) ?? .defaults
         )

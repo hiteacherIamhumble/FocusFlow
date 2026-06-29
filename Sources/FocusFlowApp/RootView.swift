@@ -67,6 +67,12 @@ struct RootView: View {
                     .accessibilityLabel(message)
             }
         }
+        .overlay {
+            if let step = model.onboardingStep {
+                OnboardingOverlay(step: step)
+                    .environmentObject(model)
+            }
+        }
         .onChange(of: model.message) { _, message in
             scheduleMessageDismiss(for: message)
         }
@@ -150,6 +156,21 @@ struct Sidebar: View {
             NavButton(title: "Settings", systemImage: "gearshape", tab: .settings)
 
             Spacer()
+            Button {
+                model.startOnboarding()
+            } label: {
+                Label("Guide", systemImage: "questionmark.circle")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(AppColor.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(AppColor.textPrimary)
+            .accessibilityIdentifier("open_onboarding_guide_button")
+
             Text("Local-first. No diagnosis. No shame loops.")
                 .font(.caption)
                 .foregroundStyle(AppColor.textSecondary)
@@ -159,6 +180,139 @@ struct Sidebar: View {
         .frame(width: 210)
         .background(AppColor.surfaceCard)
     }
+}
+
+struct OnboardingOverlay: View {
+    @EnvironmentObject private var model: FocusFlowAppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let step: FocusFlowAppModel.OnboardingStep
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.34)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(step.numberText)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(AppColor.actionPrimary)
+                    Spacer()
+                    Button("Skip") {
+                        model.completeOnboarding()
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(AppColor.textSecondary)
+                    .accessibilityIdentifier("skip_onboarding_button")
+                }
+
+                Label(copy.title, systemImage: copy.icon)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(AppColor.textPrimary)
+
+                Text(copy.body)
+                    .font(.body)
+                    .foregroundStyle(AppColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(copy.pointingText)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(AppColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppColor.actionContainer, in: RoundedRectangle(cornerRadius: 8))
+
+                HStack {
+                    Button("Back") {
+                        model.goBackOnboarding()
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(step.rawValue == 0)
+                    .accessibilityIdentifier("onboarding_back_button")
+
+                    Spacer()
+
+                    Button(step == .settings ? "Done" : "Next") {
+                        model.advanceOnboarding()
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .accessibilityIdentifier("onboarding_next_button")
+                }
+            }
+            .padding(22)
+            .frame(width: 390)
+            .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.focusRing.opacity(0.35), lineWidth: 1))
+            .shadow(color: .black.opacity(0.22), radius: 24, y: 12)
+            .transition(reduceMotion ? .opacity : .scale(scale: 0.98).combined(with: .opacity))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("\(copy.title). \(copy.body)")
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: step.rawValue)
+    }
+
+    private var copy: OnboardingCopy {
+        switch step {
+        case .welcome:
+            return OnboardingCopy(
+                icon: "house",
+                title: "Start from Home",
+                body: "Home shows your current task and any unfinished tasks saved for later.",
+                pointingText: "Use Continue or the Unfinished tasks list when you want to return to work."
+            )
+        case .startFocus:
+            return OnboardingCopy(
+                icon: "wand.and.stars",
+                title: "Name one learning task",
+                body: "In Focus, write the messy version of what you need to do. The agent turns it into small stages.",
+                pointingText: "The task box is where the main flow begins."
+            )
+        case .planReview:
+            return OnboardingCopy(
+                icon: "list.bullet.clipboard",
+                title: "Review before starting",
+                body: "After planning, you can edit stages by hand or ask AI to revise the plan before starting.",
+                pointingText: "The top step indicator shows where you are in the flow."
+            )
+        case .focusSession:
+            return OnboardingCopy(
+                icon: "timer",
+                title: "Work one stage at a time",
+                body: "This preview task shows the real session controls without saving anything to your history.",
+                pointingText: "During a session, use Pause timer, +5, Stuck, Skip, or finish only the current step."
+            )
+        case .saveForLater:
+            return OnboardingCopy(
+                icon: "tray.and.arrow.down",
+                title: "Switch without losing your place",
+                body: "This same screen lets real tasks pause cleanly when you need to switch context.",
+                pointingText: "Use More > Save for later to return tasks to Home under Unfinished tasks."
+            )
+        case .insights:
+            return OnboardingCopy(
+                icon: "chart.line.uptrend.xyaxis",
+                title: "Check learning patterns",
+                body: "Insights shows history, stats, achievements, and what the assistant is learning locally.",
+                pointingText: "Open Insights from the sidebar after a few sessions."
+            )
+        case .settings:
+            return OnboardingCopy(
+                icon: "gearshape",
+                title: "Adjust support anytime",
+                body: "Settings controls notifications, floating timer behavior, voice, shortcuts, privacy, and the saved API key.",
+                pointingText: "Use the Guide button in the sidebar to replay this tour."
+            )
+        }
+    }
+
+}
+
+private struct OnboardingCopy {
+    let icon: String
+    let title: String
+    let body: String
+    let pointingText: String
 }
 
 struct NavButton: View {
