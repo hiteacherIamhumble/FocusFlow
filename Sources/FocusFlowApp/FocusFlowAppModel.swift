@@ -96,6 +96,7 @@ final class FocusFlowAppModel: ObservableObject {
     @Published var stats: StatsSummary?
     @Published var dailyStats: [DailyStatsPoint] = []
     @Published var history: [HistoryTaskCard] = []
+    @Published var uncompletedTasks: [TaskPlan] = []
     @Published var achievements: [Achievement] = []
     @Published var pendingAchievements: [Achievement] = []
     @Published var historyKeyword = ""
@@ -106,8 +107,10 @@ final class FocusFlowAppModel: ObservableObject {
     @Published var exportFormat = "Markdown"
     @Published var remainingSeconds: Int?
     @Published var breakRemainingSeconds: Int?
+    @Published var floatingTimerMinimized = false
     @Published var message: String?
     @Published var isWorking = false
+    @Published var agentProcessingMessage: String?
     @Published var notificationFallbackMessage: String?
     @Published var remoteAgentStatus = "DeepSeek v4 flash ready when DEEPSEEK_API_KEY is set."
     @Published var hotKeyStatus = "Global shortcuts are ready."
@@ -237,6 +240,7 @@ final class FocusFlowAppModel: ObservableObject {
         Task {
             await loadSettings()
             await restoreLastSession()
+            await refreshUncompletedTasks()
             if settings.notificationsEnabled {
                 let authorized = await notificationService.requestAuthorization()
                 latestNotificationAuthorized = authorized
@@ -255,7 +259,7 @@ final class FocusFlowAppModel: ObservableObject {
             message = "Write one learning task first. It can be messy."
             return
         }
-        run {
+        run(agentMessage: "AI is planning a small first step.") {
             self.resetPlanningClarificationState()
             let canUseRemoteAgent = await self.hasRemoteAgentCredentials()
             self.message = canUseRemoteAgent ? "Planning with DeepSeek v4 flash..." : "No DeepSeek key yet. Using local planning fallback."
@@ -321,7 +325,7 @@ final class FocusFlowAppModel: ObservableObject {
             message = "Write a short answer or attach a PDF so we can plan this properly."
             return
         }
-        run {
+        run(agentMessage: "AI is continuing the plan.") {
             if skip {
                 self.clarificationTurns.append(TaskPlanningTurn(question: question.question, answer: "(skipped)"))
             } else {
@@ -368,7 +372,7 @@ final class FocusFlowAppModel: ObservableObject {
 
     func refinePlan(_ instruction: String) {
         guard let task = currentTask else { return }
-        run {
+        run(agentMessage: "AI is revising the plan.") {
             let canUseRemoteAgent = await self.hasRemoteAgentCredentials()
             self.message = canUseRemoteAgent ? "DeepSeek is revising the plan..." : "Revising with local fallback."
             let context = try await self.agentContextForPlanning()
@@ -384,7 +388,7 @@ final class FocusFlowAppModel: ObservableObject {
 
     func regeneratePlan() {
         guard let task = currentTask else { return }
-        run {
+        run(agentMessage: "AI is regenerating the plan.") {
             let canUseRemoteAgent = await self.hasRemoteAgentCredentials()
             self.message = canUseRemoteAgent ? "DeepSeek is regenerating the plan..." : "Regenerating with local fallback."
             let context = try await self.agentContextForPlanning()
@@ -440,9 +444,11 @@ final class FocusFlowAppModel: ObservableObject {
         run {
             if let runtime = try await self.executionService.activeRuntime(), runtime.status == .paused {
                 try await self.executionService.resumeCurrentStage(trigger: .user)
+                await self.scheduleReminderForActiveStage()
                 self.message = "Welcome back. Continuing counts."
             } else {
                 try await self.executionService.pauseCurrentStage(trigger: .user)
+                await self.notificationService.cancelPendingStageReminders()
                 self.message = "Paused. Your place is saved."
             }
             await self.reloadCurrentTask()
@@ -452,6 +458,7 @@ final class FocusFlowAppModel: ObservableObject {
     func completeStage() {
         run {
             let result = try await self.executionService.completeCurrentStage(trigger: .user)
+            await self.notificationService.cancelPendingStageReminders()
             self.activeResult = result
             await self.reloadCurrentTask()
             self.feedbackOptions = try await self.feedbackService.prepareFeedbackOptions(taskId: result.taskId, stageId: result.stageId)
@@ -482,6 +489,7 @@ final class FocusFlowAppModel: ObservableObject {
             if try await self.executionService.activeRuntime() != nil {
                 _ = try await self.executionService.completeCurrentStage(trigger: .user)
             }
+            await self.notificationService.cancelPendingStageReminders()
             self.feedbackOptions = []
             self.activeResult = nil
             self.pendingStageUpdate = nil
@@ -501,6 +509,7 @@ final class FocusFlowAppModel: ObservableObject {
     func skipStage() {
         run {
             let result = try await self.executionService.skipCurrentStage(trigger: .user)
+            await self.notificationService.cancelPendingStageReminders()
             self.activeResult = result
             await self.reloadCurrentTask()
             self.feedbackOptions = try await self.feedbackService.prepareFeedbackOptions(taskId: result.taskId, stageId: result.stageId)
@@ -516,6 +525,7 @@ final class FocusFlowAppModel: ObservableObject {
         guard let taskId = currentTask?.id else { return }
         run {
             self.closureSummary = try await self.closureService.presentGracefulPause(taskId: taskId, reason: nil)
+            await self.notificationService.cancelPendingStageReminders()
             self.reviewResponses = [:]
             self.reviewWasSkipped = false
             self.speakClosureIfNeeded()
@@ -524,10 +534,37 @@ final class FocusFlowAppModel: ObservableObject {
         }
     }
 
+    func saveCurrentTaskForLater(openNewTask: Bool = false) {
+        guard currentTask != nil else {
+            route = openNewTask ? .input : .home
+            return
+        }
+        run {
+            if let runtime = try await self.executionService.activeRuntime(),
+               runtime.status == .running || runtime.status == .overtime {
+                try await self.executionService.pauseCurrentStage(trigger: .user)
+            }
+            await self.notificationService.cancelPendingStageReminders()
+            await self.reloadCurrentTask()
+            await self.refreshUncompletedTasks()
+            self.resetActiveExecutionUIState()
+            self.closureSummary = nil
+            self.currentTask = nil
+            self.pendingPlanDraft = nil
+            self.clarificationQuestions = []
+            self.taskInput = ""
+            self.route = openNewTask ? .input : .home
+            self.message = openNewTask
+                ? "Saved for later. Start a different learning task when ready."
+                : "Saved for later. Find it under Unfinished tasks on Home."
+        }
+    }
+
     func abandonCurrentTask(reason: String = "You chose to stop this task for now.") {
         guard let taskId = currentTask?.id else { return }
         run {
             self.closureSummary = try await self.closureService.presentAbandonment(taskId: taskId, reason: reason)
+            await self.notificationService.cancelPendingStageReminders()
             self.reviewResponses = [:]
             self.reviewWasSkipped = false
             self.pendingStageUpdate = nil
@@ -603,7 +640,7 @@ final class FocusFlowAppModel: ObservableObject {
 
     func submitFeedback(_ option: FeedbackOption) {
         guard let result = activeResult else { return }
-        run {
+        run(agentMessage: "AI is reviewing your feedback.") {
             let feedback = StageFeedback(
                 taskId: result.taskId,
                 stageId: result.stageId,
@@ -759,7 +796,7 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     func requestStuckHelp() {
-        run {
+        run(agentMessage: "AI is finding a gentle next step.") {
             let request = try await self.executionService.requestDifficulty(trigger: .userClickedDifficulty)
             self.beginStuckSession(with: request)
             self.stuckActionCount += 1
@@ -797,6 +834,7 @@ final class FocusFlowAppModel: ObservableObject {
         guard let stage = activeStage else { return }
         timeoutPromptedStageId = stage.id
         timeoutDifficultyPrompt = FeedbackAgent().difficultyPrompt(for: stage)
+        setFloatingTimerMinimized(false)
         bringFloatingWindowToFront()
         message = "Time's up for this step. What would help?"
 
@@ -828,7 +866,7 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     func testDeepSeekConnection() {
-        run {
+        run(agentMessage: "AI is testing the remote agent connection.") {
             let client = DeepSeekLLMClient(apiKeyProvider: {
                 if let env = ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"], !env.isEmpty {
                     return env
@@ -861,13 +899,18 @@ final class FocusFlowAppModel: ObservableObject {
             message = "Start a task first to preview the floating focus window."
             return
         }
-        syncFloatingExecutionWindow()
+        bringFloatingWindowToFront()
         message = "Floating focus window is visible. Drag it to test placement."
     }
 
     func bringFloatingWindowToFront() {
         syncFloatingExecutionWindow()
         floatingController.bringToFront()
+    }
+
+    func setFloatingTimerMinimized(_ minimized: Bool) {
+        floatingTimerMinimized = minimized
+        floatingController.setMinimized(minimized)
     }
 
     func testVoicePrompt() {
@@ -905,6 +948,7 @@ final class FocusFlowAppModel: ObservableObject {
     private func startBreak(seconds: Int, label: String) {
         run {
             try await self.executionService.pauseCurrentStage(trigger: .user)
+            await self.notificationService.cancelPendingStageReminders()
             self.breakEndsAt = Date().addingTimeInterval(TimeInterval(seconds))
             self.breakRemainingSeconds = seconds
             let scheduled = await self.notificationService.scheduleStageReminder(
@@ -939,10 +983,10 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     private func requestNextHint() {
-        guard let request = lastStuckRequest, !stuckHintLoading else { return }
+        guard let request = lastStuckRequest, !stuckHintLoading, !isWorking else { return }
         let level = stuckHintLevel
         stuckHintLoading = true
-        run {
+        run(agentMessage: "AI is finding a hint.") {
             defer { self.stuckHintLoading = false }
             let text = try await self.feedbackService.generateHint(request, level: level)
             self.stuckHintEntries.append(StuckHintEntry(kind: .hint, text: text, hintLevel: level))
@@ -955,9 +999,9 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     private func requestStuckExample() {
-        guard let request = lastStuckRequest, !stuckHintLoading else { return }
+        guard let request = lastStuckRequest, !stuckHintLoading, !isWorking else { return }
         stuckHintLoading = true
-        run {
+        run(agentMessage: "AI is finding an example.") {
             defer { self.stuckHintLoading = false }
             let text = try await self.feedbackService.generateExample(request)
             self.stuckHintEntries.append(StuckHintEntry(kind: .example, text: text))
@@ -1038,31 +1082,12 @@ final class FocusFlowAppModel: ObservableObject {
 
     func saveProgressFromIntervention() {
         interventionPanelVisible = false
-        abandonTaskGracefully()
+        saveCurrentTaskForLater(openNewTask: false)
     }
 
     func switchTaskFromIntervention() {
-        run {
-            if let taskId = self.currentTask?.id {
-                _ = try await self.closureService.presentGracefulPause(taskId: taskId, reason: "You chose to switch tasks.")
-            }
-            self.currentTask = nil
-            self.pendingPlanDraft = nil
-            self.clarificationQuestions = []
-            self.activeResult = nil
-            self.feedbackOptions = []
-            self.pendingStageUpdate = nil
-            self.clearStageUpdateUndo()
-            self.postFeedbackMessage = nil
-            self.readyToContinueAfterFeedback = false
-            self.reviewResponses = [:]
-            self.reviewWasSkipped = false
-            self.stuckHelp = nil
-            self.interventionPanelVisible = false
-            self.taskInput = ""
-            self.route = .input
-            self.message = "Progress saved. Pick a different learning task when ready."
-        }
+        interventionPanelVisible = false
+        saveCurrentTaskForLater(openNewTask: true)
     }
 
     func beginVoiceInput() {
@@ -1173,6 +1198,7 @@ final class FocusFlowAppModel: ObservableObject {
             stats = try await dataCenter.getStats(range: .last7Days)
             dailyStats = try await dataCenter.getDailyStats(range: .last7Days)
             try await refreshHistory()
+            await refreshUncompletedTasks()
             achievements = try await dataCenter.getUnlockedAchievements()
             pendingAchievements = try await dataCenter.getPendingAchievements()
             if !settings.profileLearningEnabled {
@@ -1215,6 +1241,13 @@ final class FocusFlowAppModel: ObservableObject {
     func refreshReadiness() async {
         let hasEnvironmentKey = ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"]?.isEmpty == false
         let hasSavedKey = await credentialStore.readDeepSeekAPIKey() != nil
+        let notificationAuthorized: Bool?
+        if settings.notificationsEnabled {
+            notificationAuthorized = await notificationService.currentAuthorizationStatus()
+            latestNotificationAuthorized = notificationAuthorized
+        } else {
+            notificationAuthorized = nil
+        }
         let dataWritable: Bool
         do {
             try directory.prepare()
@@ -1228,7 +1261,7 @@ final class FocusFlowAppModel: ObservableObject {
         readinessReport = readinessService.report(for: AppReadinessInputs(
             settings: settings,
             hasDeepSeekAPIKey: hasEnvironmentKey || hasSavedKey,
-            notificationAuthorized: latestNotificationAuthorized,
+            notificationAuthorized: notificationAuthorized,
             dataDirectoryWritable: dataWritable,
             hotKeyFailedRegistrationCount: hotKeyManager.failedRegistrationCount,
             englishVoiceAvailable: !SpeechSynthesisService.availableEnglishVoices().isEmpty,
@@ -1249,7 +1282,7 @@ final class FocusFlowAppModel: ObservableObject {
             applyHistoryFilters()
             return
         }
-        run {
+        run(agentMessage: "AI is interpreting your history query.") {
             let query: HistoryQuery
             do {
                 query = try await self.agentRunLogger.run(
@@ -1357,7 +1390,7 @@ final class FocusFlowAppModel: ObservableObject {
                 }
                 await self.scheduleReminderForActiveStage()
             } else {
-                self.notificationService.cancelPendingStageReminders()
+                await self.notificationService.cancelPendingFocusFlowReminders()
                 self.notificationFallbackMessage = nil
             }
             self.remoteAgentStatus = self.settings.remoteAgentEnabled ? "DeepSeek v4 flash is enabled when a key is available." : "Remote agent is off. Local fallback is active."
@@ -1577,7 +1610,15 @@ final class FocusFlowAppModel: ObservableObject {
 
     var hasResumableTask: Bool {
         guard let task = currentTask else { return false }
-        return [.draft, .planned, .active, .paused].contains(task.status)
+        return isUncompletedTask(task)
+    }
+
+    func refreshUncompletedTasks() async {
+        do {
+            uncompletedTasks = try await repository.listTasks().filter(isUncompletedTask)
+        } catch {
+            message = "Could not load unfinished tasks: \(error.localizedDescription)"
+        }
     }
 
     func selectTab(_ tab: NavTab) {
@@ -1606,11 +1647,57 @@ final class FocusFlowAppModel: ObservableObject {
         switch task.status {
         case .draft, .planned:
             route = .plan
-        case .active, .paused:
+        case .active, .paused, .gracefullyPaused:
             route = .execution
             syncFloatingExecutionWindow()
         default:
             route = .input
+        }
+    }
+
+    func resumeTask(_ task: TaskPlan) {
+        run {
+            let latest = try await self.repository.getTask(task.id)
+            guard self.isUncompletedTask(latest) else {
+                await self.refreshUncompletedTasks()
+                self.message = "That task is already closed."
+                return
+            }
+
+            self.currentTask = latest
+            self.resetActiveExecutionUIState()
+            self.closureSummary = nil
+            self.taskInput = latest.originalInput
+
+            if latest.status == .draft || latest.status == .planned {
+                self.route = .plan
+                self.message = "Plan reopened."
+                return
+            }
+
+            guard let stage = self.nextResumableStage(in: latest) else {
+                await self.refreshUncompletedTasks()
+                self.message = "No unfinished step found for that task."
+                return
+            }
+
+            if let runtime = try await self.executionService.activeRuntime(),
+               runtime.taskId == latest.id,
+               runtime.stageId == stage.id {
+                if runtime.status == .paused {
+                    try await self.executionService.resumeCurrentStage(trigger: .user)
+                }
+            } else {
+                try await self.executionService.startStage(taskId: latest.id, stageId: stage.id)
+            }
+
+            self.currentTask = try await self.repository.getTask(latest.id)
+            self.startFeedbackPrewarmForActiveStage()
+            await self.scheduleReminderForActiveStage()
+            await self.refreshUncompletedTasks()
+            self.route = .execution
+            self.syncFloatingExecutionWindow()
+            self.message = "Task reopened where you can continue."
         }
     }
 
@@ -1660,6 +1747,24 @@ final class FocusFlowAppModel: ObservableObject {
         readyToContinueAfterFeedback = false
         stuckHelp = nil
         interventionPanelVisible = false
+    }
+
+    private func resetActiveExecutionUIState() {
+        activeResult = nil
+        feedbackOptions = []
+        pendingStageUpdate = nil
+        clearStageUpdateUndo()
+        postFeedbackMessage = nil
+        readyToContinueAfterFeedback = false
+        stuckHelp = nil
+        timeoutDifficultyPrompt = nil
+        stuckHintEntries = []
+        stuckHintLevel = 0
+        stuckHintLoading = false
+        stuckEscalationVisible = false
+        interventionPanelVisible = false
+        voiceTranscript = ""
+        feedbackOtherText = ""
     }
 
     private func agentContextForPlanning() async throws -> AgentContext {
@@ -1828,13 +1933,21 @@ final class FocusFlowAppModel: ObservableObject {
 
     private func scheduleReminderForActiveStage() async {
         guard settings.notificationsEnabled, let stage = activeStage else { return }
+        await notificationService.cancelPendingStageReminders()
+        let runtimeRemaining: Int
+        do {
+            runtimeRemaining = try await executionService.remainingSeconds() ?? stage.estimatedSeconds
+        } catch {
+            runtimeRemaining = stage.estimatedSeconds
+        }
+        let remaining = max(1, runtimeRemaining)
         var allScheduled = true
-        if stage.estimatedSeconds > 180 {
+        if remaining > 180 {
             let soonScheduled = await notificationService.scheduleStageReminder(
                 identifier: "focusflow.stage.\(stage.id).soon",
                 title: "FocusFlow soon",
                 body: "Two minutes left. Stop at the next clear edge.",
-                secondsFromNow: TimeInterval(max(1, stage.estimatedSeconds - 120))
+                secondsFromNow: TimeInterval(max(1, remaining - 120))
             )
             allScheduled = allScheduled && soonScheduled
         }
@@ -1842,7 +1955,7 @@ final class FocusFlowAppModel: ObservableObject {
             identifier: "focusflow.stage.\(stage.id).checkin",
             title: "FocusFlow check-in",
             body: "This step is ready for a gentle check-in.",
-            secondsFromNow: TimeInterval(max(1, stage.estimatedSeconds))
+            secondsFromNow: TimeInterval(remaining)
         )
         allScheduled = allScheduled && checkInScheduled
         if allScheduled {
@@ -1929,12 +2042,22 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     private func shouldRestore(_ task: TaskPlan) -> Bool {
-        guard [.draft, .planned, .active, .paused].contains(task.status) else {
+        isUncompletedTask(task)
+    }
+
+    private func isUncompletedTask(_ task: TaskPlan) -> Bool {
+        guard [.draft, .planned, .active, .paused, .gracefullyPaused].contains(task.status) else {
             return false
         }
         return task.stages.contains {
             [.idle, .running, .paused, .overtime, .adjusted].contains($0.status)
         }
+    }
+
+    private func nextResumableStage(in task: TaskPlan) -> StagePlan? {
+        let stages = task.stages.sorted { $0.order < $1.order }
+        return stages.first { [.running, .paused, .overtime].contains($0.status) }
+            ?? stages.first { [.idle, .adjusted].contains($0.status) }
     }
 
     private func installHotkeys() {
@@ -2085,8 +2208,10 @@ final class FocusFlowAppModel: ObservableObject {
         )
     }
 
-    private func run(_ operation: @escaping @MainActor () async throws -> Void) {
+    private func run(agentMessage: String? = nil, _ operation: @escaping @MainActor () async throws -> Void) {
+        guard !isWorking else { return }
         isWorking = true
+        agentProcessingMessage = agentMessage
         Task { @MainActor in
             do {
                 try await operation()
@@ -2094,6 +2219,7 @@ final class FocusFlowAppModel: ObservableObject {
             } catch {
                 message = error.localizedDescription
             }
+            agentProcessingMessage = nil
             isWorking = false
         }
     }

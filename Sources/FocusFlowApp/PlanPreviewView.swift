@@ -27,8 +27,8 @@ struct PlanPreviewView: View {
                     if let task = model.currentTask {
                         planHeader(task)
 
-                        if model.isWorking {
-                            AgentPlanningStatusCard(text: model.message ?? "AI is revising the plan...")
+                        if let agentMessage = model.agentProcessingMessage {
+                            AgentPlanningStatusCard(text: agentMessage, isProcessing: true)
                         } else if let response = task.metadata["agent_response"], !response.isEmpty {
                             AgentPlanningStatusCard(text: response)
                         }
@@ -52,6 +52,7 @@ struct PlanPreviewView: View {
                 PlanAIRevisionPanel(
                     prompt: $revisionPrompt,
                     isWorking: model.isWorking,
+                    isAgentWorking: model.agentProcessingMessage != nil,
                     onQuickPrompt: { prompt in
                         revisionPrompt = prompt
                     },
@@ -253,14 +254,22 @@ struct PlanningModeBadge: View {
 
 struct AgentPlanningStatusCard: View {
     let text: String
+    var isProcessing = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "sparkles")
-                .foregroundStyle(AppColor.actionPrimary)
-                .frame(width: 24)
+            Group {
+                if isProcessing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(AppColor.actionPrimary)
+                }
+            }
+            .frame(width: 24)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Agent response")
+                Text(isProcessing ? "AI is thinking" : "Agent response")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(AppColor.textSecondary)
                 Text(text)
@@ -274,13 +283,14 @@ struct AgentPlanningStatusCard: View {
         .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.borderSubtle.opacity(0.65)))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Agent response. \(text)")
+        .accessibilityLabel("\(isProcessing ? "AI is thinking" : "Agent response"). \(text)")
     }
 }
 
 struct PlanAIRevisionPanel: View {
     @Binding var prompt: String
     let isWorking: Bool
+    let isAgentWorking: Bool
     let onQuickPrompt: (String) -> Void
     let onSubmit: () -> Void
 
@@ -356,7 +366,7 @@ struct PlanAIRevisionPanel: View {
         Button {
             onSubmit()
         } label: {
-            Label(isWorking ? "AI is revising..." : "Ask AI", systemImage: "paperplane.fill")
+            Label(isAgentWorking ? "AI is revising..." : "Ask AI", systemImage: "paperplane.fill")
         }
         .buttonStyle(PrimaryButtonStyle())
         .disabled(isWorking || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

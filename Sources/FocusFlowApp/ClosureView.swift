@@ -75,13 +75,13 @@ struct ClosureView: View {
                 }
 
                 AdaptiveButtonRow {
-                    Button("Start another task") {
+                    Button(summary.closureType == .completed ? "Start another task" : "Archive and start new") {
                         model.archiveClosureAndStartNew()
                     }
                     .buttonStyle(PrimaryButtonStyle())
                     .accessibilityIdentifier("start_another_task_button")
 
-                    Button("View history") {
+                    Button(summary.closureType == .completed ? "View history" : "Archive in history") {
                         model.archiveClosureAndOpenPersonalCenter()
                     }
                     .buttonStyle(SecondaryButtonStyle())
@@ -179,7 +179,7 @@ struct AbandonedClosureActions: View {
                 .font(.headline)
                 .foregroundStyle(AppColor.textPrimary)
             AdaptiveButtonRow {
-                Button("Save progress") {
+                Button("Archive in history") {
                     model.archiveClosureAndOpenPersonalCenter()
                 }
                 .buttonStyle(SecondaryButtonStyle())
@@ -192,15 +192,10 @@ struct AbandonedClosureActions: View {
                     model.message = "Rest is a valid next step. Your progress is saved."
                 }
                 .buttonStyle(SecondaryButtonStyle())
-                Button("Switch task") {
+                Button("Archive and start new") {
                     model.archiveClosureAndStartNew()
                 }
                 .buttonStyle(SecondaryButtonStyle())
-                Button("Close") {
-                    model.archiveClosureAndStartNew()
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(AppColor.textSecondary)
             }
         }
         .padding(18)

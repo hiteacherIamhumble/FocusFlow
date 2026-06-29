@@ -9,6 +9,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 28) {
                 header
                 heroCard
+                unfinishedTasksSection
                 bentoRow
                 Spacer(minLength: 0)
             }
@@ -19,6 +20,11 @@ struct HomeView: View {
         .onAppear {
             Task { await model.refreshStats() }
         }
+    }
+
+    private var visibleUnfinishedTasks: [TaskPlan] {
+        let currentId = model.currentTask?.id
+        return Array(model.uncompletedTasks.filter { $0.id != currentId }.prefix(5))
     }
 
     private var header: some View {
@@ -97,6 +103,42 @@ struct HomeView: View {
     }
 
     @ViewBuilder
+    private var unfinishedTasksSection: some View {
+        if !visibleUnfinishedTasks.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Unfinished tasks")
+                            .font(.headline)
+                            .foregroundStyle(AppColor.textPrimary)
+                        Text("Paused, planned, and in-progress")
+                            .font(.callout)
+                            .foregroundStyle(AppColor.textSecondary)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await model.refreshUncompletedTasks() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(AppColor.textSecondary)
+                    .accessibilityLabel("Refresh unfinished tasks")
+                }
+
+                VStack(spacing: 10) {
+                    ForEach(visibleUnfinishedTasks) { task in
+                        UnfinishedTaskRow(task: task) {
+                            model.resumeTask(task)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var bentoCards: some View {
         MetricCard(
             title: "Learning rhythm",
@@ -122,5 +164,80 @@ struct HomeView: View {
         case 12..<18: return "Good afternoon"
         default: return "Good evening"
         }
+    }
+}
+
+struct UnfinishedTaskRow: View {
+    let task: TaskPlan
+    let onResume: () -> Void
+
+    private var completedCount: Int {
+        task.stages.filter { $0.status == .completed }.count
+    }
+
+    private var nextStage: StagePlan? {
+        let stages = task.stages.sorted { $0.order < $1.order }
+        return stages.first { [.running, .paused, .overtime].contains($0.status) }
+            ?? stages.first { [.idle, .adjusted].contains($0.status) }
+    }
+
+    private var statusLabel: String {
+        switch task.status {
+        case .draft, .planned:
+            return "Plan ready"
+        case .active:
+            return "In progress"
+        case .paused, .gracefullyPaused:
+            return "Paused"
+        default:
+            return task.status.rawValue
+        }
+    }
+
+    private var actionLabel: String {
+        switch task.status {
+        case .draft, .planned:
+            return "Open plan"
+        default:
+            return "Resume"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: task.status == .paused || task.status == .gracefullyPaused ? "pause.circle.fill" : "circle.dotted")
+                .font(.title3)
+                .foregroundStyle(task.status == .paused || task.status == .gracefullyPaused ? AppColor.warning : AppColor.actionPrimary)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(task.title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(AppColor.textPrimary)
+                    .lineLimit(1)
+                Text(nextStage.map { "Next: \($0.title)" } ?? "\(completedCount) of \(task.stages.count) steps done")
+                    .font(.callout)
+                    .foregroundStyle(AppColor.textSecondary)
+                    .lineLimit(1)
+                Text("\(statusLabel) · \(completedCount) of \(task.stages.count) steps · about \(task.estimatedTotalSeconds.minutesText)")
+                    .font(.caption)
+                    .foregroundStyle(AppColor.textSecondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 12)
+
+            Button(actionLabel) {
+                onResume()
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .accessibilityIdentifier("resume_task_\(task.id)")
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.borderSubtle.opacity(0.7)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(task.title). \(statusLabel). \(completedCount) of \(task.stages.count) steps complete.")
     }
 }

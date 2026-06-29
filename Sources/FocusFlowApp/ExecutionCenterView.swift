@@ -33,7 +33,8 @@ struct ExecutionWorkspaceView: View {
     }
 
     private var overlayActive: Bool {
-        model.interventionPanelVisible
+        model.agentProcessingMessage != nil
+            || model.interventionPanelVisible
             || !model.feedbackOptions.isEmpty
             || model.pendingStageUpdate != nil
             || model.postFeedbackMessage != nil
@@ -171,6 +172,7 @@ private extension ExecutionWorkspaceView {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PrimaryButtonStyle())
+            .disabled(model.isWorking)
             .accessibilityIdentifier("stage_complete_button")
         } else {
             Button {
@@ -180,6 +182,7 @@ private extension ExecutionWorkspaceView {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PrimaryButtonStyle())
+            .disabled(model.isWorking)
             .accessibilityIdentifier("stage_start_button")
         }
     }
@@ -191,7 +194,7 @@ private extension ExecutionWorkspaceView {
             HStack(spacing: 6) {
                 if isRunning {
                     executionControlButton(
-                        title: stage.status == .paused ? "Continue" : "Pause",
+                        title: stage.status == .paused ? "Resume timer" : "Pause timer",
                         systemImage: stage.status == .paused ? "play.fill" : "pause.fill",
                         accessibilityIdentifier: "stage_pause_resume_button"
                     ) {
@@ -224,8 +227,14 @@ private extension ExecutionWorkspaceView {
                 }
 
                 Menu {
-                    Button("Pause task gently") { model.abandonTaskGracefully() }
-                        .accessibilityIdentifier("pause_task_gently_button")
+                    Button("Save for later") {
+                        model.saveCurrentTaskForLater()
+                    }
+                    .accessibilityIdentifier("save_task_for_later_button")
+                    Button("Switch to new task") {
+                        model.saveCurrentTaskForLater(openNewTask: true)
+                    }
+                    .accessibilityIdentifier("switch_to_new_task_button")
                     Button("Complete task now") { model.completeTaskNow() }
                         .accessibilityIdentifier("complete_task_now_button")
                     Button("End task", role: .destructive) {
@@ -238,6 +247,7 @@ private extension ExecutionWorkspaceView {
                 }
                 .menuStyle(.borderlessButton)
                 .buttonStyle(CompactSecondaryButtonStyle())
+                .disabled(model.isWorking)
                 .fixedSize()
                 .accessibilityIdentifier("execution_more_menu")
             }
@@ -258,6 +268,7 @@ private extension ExecutionWorkspaceView {
                 .minimumScaleFactor(0.85)
         }
         .buttonStyle(CompactSecondaryButtonStyle())
+        .disabled(model.isWorking)
         .accessibilityIdentifier(accessibilityIdentifier)
     }
 
@@ -348,7 +359,9 @@ private extension ExecutionWorkspaceView {
 
             ScrollView {
                 Group {
-                    if model.interventionPanelVisible {
+                    if let agentMessage = model.agentProcessingMessage {
+                        AgentProcessingCard(message: agentMessage)
+                    } else if model.interventionPanelVisible {
                         InterventionPanel()
                     } else if !model.feedbackOptions.isEmpty {
                         FeedbackSheet(options: model.feedbackOptions)
@@ -405,7 +418,7 @@ struct InterventionPanel: View {
                 .font(.body)
                 .foregroundStyle(AppColor.textPrimary)
             AdaptiveButtonRow {
-                Button("Save progress") {
+                Button("Save for later") {
                     model.saveProgressFromIntervention()
                 }
                 .buttonStyle(SecondaryButtonStyle())
@@ -417,7 +430,7 @@ struct InterventionPanel: View {
                     model.takeTenMinuteRest()
                 }
                 .buttonStyle(SecondaryButtonStyle())
-                Button("Switch task") {
+                Button("Switch to new task") {
                     model.switchTaskFromIntervention()
                 }
                 .buttonStyle(SecondaryButtonStyle())
@@ -454,6 +467,33 @@ struct TimerReadout: View {
     }
 }
 
+struct AgentProcessingCard: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            ProgressView()
+                .controlSize(.regular)
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("AI is thinking")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(AppColor.textPrimary)
+                Text("\(message) Controls are paused to prevent duplicate actions.")
+                    .font(.callout)
+                    .foregroundStyle(AppColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppColor.borderSubtle.opacity(0.6)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("AI is thinking. \(message) Controls are paused to prevent duplicate actions.")
+    }
+}
+
 struct FeedbackSheet: View {
     @EnvironmentObject private var model: FocusFlowAppModel
     let options: [FeedbackOption]
@@ -477,6 +517,7 @@ struct FeedbackSheet: View {
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(SecondaryButtonStyle())
+                    .disabled(model.isWorking)
                     .accessibilityIdentifier("feedback_option_\(option.intent.rawValue)")
                     .accessibilityLabel(option.label)
                     .accessibilityHint("Submits feedback for this completed step.")
@@ -493,6 +534,7 @@ struct FeedbackSheet: View {
                     Label(model.isListeningForVoice ? "Stop voice" : "Voice note", systemImage: "waveform")
                 }
                 .buttonStyle(SecondaryButtonStyle())
+                .disabled(model.isWorking)
                 .accessibilityIdentifier("feedback_voice_button")
                 if !model.voiceTranscript.isEmpty {
                     Text(model.voiceTranscript)
@@ -512,6 +554,7 @@ struct FeedbackSheet: View {
                     Label("Submit other", systemImage: "square.and.pencil")
                 }
                 .buttonStyle(SecondaryButtonStyle())
+                .disabled(model.isWorking)
                 .accessibilityIdentifier("submit_other_feedback_button")
             }
             Button("Skip feedback") {
@@ -519,12 +562,14 @@ struct FeedbackSheet: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(AppColor.textSecondary)
+            .disabled(model.isWorking)
             .accessibilityIdentifier("skip_feedback_button")
             Button("Stop here") {
                 model.submitFeedback(FeedbackOption(label: "Stop here", emoji: "🌙", intent: .wantToQuit))
             }
             .buttonStyle(.plain)
             .foregroundStyle(AppColor.textSecondary)
+            .disabled(model.isWorking)
             .accessibilityIdentifier("stop_here_feedback_button")
         }
         .padding(24)
@@ -591,6 +636,7 @@ struct PlanAdjustmentPreviewCard: View {
                     Label("Keep original", systemImage: "arrow.uturn.left")
                 }
                 .buttonStyle(SecondaryButtonStyle())
+                .disabled(model.isWorking)
 
                 Button {
                     model.applyPendingStageUpdate()
@@ -598,6 +644,7 @@ struct PlanAdjustmentPreviewCard: View {
                     Label("Apply adjustment", systemImage: "checkmark.circle.fill")
                 }
                 .buttonStyle(PrimaryButtonStyle())
+                .disabled(model.isWorking)
             }
         }
         .padding(20)
@@ -713,6 +760,7 @@ struct TimeoutDifficultyCard: View {
                         .frame(minWidth: 96)
                     }
                     .buttonStyle(SecondaryButtonStyle())
+                    .disabled(model.isWorking)
                 }
             }
 
@@ -722,6 +770,7 @@ struct TimeoutDifficultyCard: View {
             .buttonStyle(.plain)
             .font(.callout)
             .foregroundStyle(AppColor.textSecondary)
+            .disabled(model.isWorking)
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -754,6 +803,7 @@ struct StuckHelpCard: View {
             .buttonStyle(.plain)
             .font(.callout)
             .foregroundStyle(AppColor.textSecondary)
+            .disabled(model.isWorking)
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -854,6 +904,7 @@ struct StuckHelpCard: View {
                 model.escalateStuckHelp()
             }
             .buttonStyle(SecondaryButtonStyle())
+            .disabled(model.isWorking)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -875,6 +926,7 @@ struct StuckHelpCard: View {
     }
 
     private func isDisabled(_ action: StuckHelpAction) -> Bool {
+        if model.isWorking { return true }
         if model.stuckHintLoading { return true }
         if action.actionType == .hint, !model.canDeepenHint { return true }
         return false

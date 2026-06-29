@@ -155,8 +155,8 @@ end tell
 clickButton("Read one paper for class", 10)
 clickButton("Make it smaller", 15)
 clickButton("Start the first step", 20)
-clickButton("Pause", 15)
-clickButton("Continue", 15)
+clickButton("Pause timer", 15)
+clickButton("Resume timer", 15)
 clickButton("+5 min", 15)
 clickButton("I'm stuck", 15)
 clickButton("3-min break", 15)
@@ -165,7 +165,7 @@ clickButton("I'm stuck", 15)
 clickButton("Split", 15)
 clickButton("Skip for now", 15)
 clickButton("Skip feedback", 15)
-clickButton("Pause task gently", 15)
+clickButton("Save for later", 15)
 return "execution_controls_smoke_clicked"
 APPLESCRIPT
 then
