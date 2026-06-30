@@ -120,7 +120,6 @@ final class FocusFlowAppModel: ObservableObject {
     @Published var selectedHistoryDetail: HistoryTaskDetail?
     @Published var exportFormat = "Markdown"
     @Published var remainingSeconds: Int?
-    @Published var breakRemainingSeconds: Int?
     @Published var floatingTimerMinimized = false
     @Published var message: String?
     @Published var isWorking = false
@@ -208,7 +207,6 @@ final class FocusFlowAppModel: ObservableObject {
     private let speechRecognizer = SpeechRecognitionService()
     private var timer: Timer?
     private var timeoutPromptedStageId: String?
-    private var breakEndsAt: Date?
     private var stuckActionCount = 0
     private var stuckHintLevel = 0
     private var lastStuckRequest: StuckHelpRequest?
@@ -908,11 +906,11 @@ final class FocusFlowAppModel: ObservableObject {
     }
 
     func takeShortBreak() {
-        startBreak(seconds: 180, label: "Three gentle minutes. Come back when ready.")
+        startBreak(seconds: 180, label: "Paused for a short break. Your place is saved.")
     }
 
     func takeTenMinuteRest() {
-        startBreak(seconds: 600, label: "Ten minutes saved. Your place will be here.")
+        startBreak(seconds: 600, label: "Paused for a longer rest. Your place is saved.")
     }
 
     func testFloatingTimer() {
@@ -970,20 +968,18 @@ final class FocusFlowAppModel: ObservableObject {
         run {
             try await self.executionService.pauseCurrentStage(trigger: .user)
             await self.notificationService.cancelPendingStageReminders()
-            self.breakEndsAt = Date().addingTimeInterval(TimeInterval(seconds))
-            self.breakRemainingSeconds = seconds
-            let scheduled = await self.notificationService.scheduleStageReminder(
-                identifier: "focusflow.break.active",
-                title: "FocusFlow break is done",
-                body: "Your place is saved. Come back gently when you are ready.",
-                secondsFromNow: TimeInterval(seconds)
-            )
-            if !scheduled {
-                await self.activateNotificationFallback(reason: "break_notification_unavailable", stage: self.activeStage)
+            var reminderScheduled = false
+            if self.settings.notificationsEnabled {
+                reminderScheduled = await self.notificationService.scheduleStageReminder(
+                    identifier: "focusflow.stage.break.active",
+                    title: "FocusFlow break is done",
+                    body: "Your place is saved. Come back gently when you are ready.",
+                    secondsFromNow: TimeInterval(seconds)
+                )
             }
             await self.recordStuckAction(.shortBreak)
             self.interventionPanelVisible = false
-            self.message = label
+            self.message = reminderScheduled ? "\(label) I will remind you." : "\(label) Come back when ready."
             await self.reloadCurrentTask()
         }
     }
@@ -2020,23 +2016,9 @@ final class FocusFlowAppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.remainingSeconds = try? await self.executionService.remainingSeconds()
-                self.updateBreakCountdown()
                 self.syncFloatingExecutionWindow()
                 self.handleTimeoutIfNeeded()
             }
-        }
-    }
-
-    private func updateBreakCountdown() {
-        guard let breakEndsAt else {
-            breakRemainingSeconds = nil
-            return
-        }
-        let remaining = max(0, Int(breakEndsAt.timeIntervalSinceNow.rounded(.up)))
-        breakRemainingSeconds = remaining
-        if remaining == 0 {
-            self.breakEndsAt = nil
-            message = "Break is done. Your stage is still paused and ready."
         }
     }
 

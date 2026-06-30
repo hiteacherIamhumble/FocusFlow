@@ -23,7 +23,7 @@ public struct PlanOptimizationAgent: Sendable {
 
     public func optimize(task: TaskPlan, feedback: StageFeedback) -> StageUpdate? {
         guard let source = task.stages.first(where: { $0.id == feedback.stageId }) else { return nil }
-        let remaining = task.stages.filter { $0.order > source.order && $0.status == .idle }
+        let remaining = task.stages.filter { $0.order > source.order && ($0.status == .idle || $0.status == .adjusted) }
         guard !remaining.isEmpty || feedback.intent == .tooHard else { return nil }
 
         switch feedback.intent {
@@ -54,26 +54,18 @@ public struct PlanOptimizationAgent: Sendable {
                 reason: "Similar upcoming steps now have a little more room.",
                 requiresUserConfirmation: true
             )
-        case .distracted, .needBreak:
-            let breakStage = StagePlan(
+        case .needBreak:
+            return breakOnlyUpdate(task: task, source: source, remaining: remaining, breakStage: nil)
+        case .distracted:
+            let breakStage = makeBreakStage(
                 taskId: task.id,
-                order: source.order + 1,
+                source: source,
                 title: "Reset for three minutes",
                 instruction: "Take a short reset: stand up, drink water, or breathe. Come back gently.",
                 completionCriteria: "Three minutes pass and you choose the next step.",
-                stageType: .breakTime,
-                estimatedSeconds: 180,
-                createdBy: .module3FeedbackOptimization,
-                parentStageId: source.id
+                estimatedSeconds: 180
             )
-            return StageUpdate(
-                taskId: task.id,
-                sourceStageId: source.id,
-                updateScope: .remainingStages,
-                updatedStages: [breakStage] + remaining,
-                reason: "A short reset was added before continuing.",
-                requiresUserConfirmation: true
-            )
+            return breakOnlyUpdate(task: task, source: source, remaining: remaining, breakStage: breakStage)
         case .wantToQuit:
             return nil
         default:
@@ -113,7 +105,7 @@ public struct PlanOptimizationAgent: Sendable {
         llmClient: any LLMClient
     ) async throws -> StageUpdate? {
         guard let source = task.stages.first(where: { $0.id == feedback.stageId }) else { return nil }
-        let remaining = task.stages.filter { $0.order > source.order && $0.status == .idle }
+        let remaining = task.stages.filter { $0.order > source.order && ($0.status == .idle || $0.status == .adjusted) }
         let content = try await llmClient.complete(
             messages: [
                 LLMMessage(role: "system", content: planOptimizationSystemPrompt),
@@ -169,6 +161,26 @@ public struct PlanOptimizationAgent: Sendable {
     ) throws -> StageUpdate? {
         let decoded = try FocusFlowJSON.decoder.decode(LLMStageOptimization.self, from: Data(content.utf8))
         guard decoded.shouldUpdate, !decoded.updatedStages.isEmpty else { return nil }
+
+        if feedback.intent == .needBreak {
+            let breakStage = decoded.updatedStages.first { StageType(rawValue: $0.stageType) == .breakTime }
+                ?? decoded.updatedStages.first
+            return breakOnlyUpdate(
+                task: task,
+                source: source,
+                remaining: remaining,
+                breakStage: breakStage.map {
+                    makeBreakStage(
+                        taskId: task.id,
+                        source: source,
+                        title: $0.title.cleanOptimizationText(fallback: "Take a short break"),
+                        instruction: $0.instruction.cleanOptimizationText(fallback: "Step away briefly and come back gently."),
+                        completionCriteria: $0.completionCriteria.cleanOptimizationText(fallback: "The break timer is done."),
+                        estimatedSeconds: $0.estimatedSeconds
+                    )
+                }
+            )
+        }
 
         let scope = StageUpdateScope(rawValue: decoded.updateScope) ?? inferredScope(for: feedback)
         let mappedStages = decoded.updatedStages.enumerated().map { index, stage in
@@ -240,6 +252,54 @@ public struct PlanOptimizationAgent: Sendable {
             return "The next steps were adjusted to match how this step felt."
         }
     }
+
+    private func breakOnlyUpdate(
+        task: TaskPlan,
+        source: StagePlan,
+        remaining: [StagePlan],
+        breakStage: StagePlan?
+    ) -> StageUpdate? {
+        guard !remaining.isEmpty else { return nil }
+        let insertedBreak = breakStage ?? makeBreakStage(
+            taskId: task.id,
+            source: source,
+            title: "Take a short break",
+            instruction: "Step away briefly: water, stretch, breathe, or rest your eyes.",
+            completionCriteria: "The break timer is done and you are ready for the next step.",
+            estimatedSeconds: 180
+        )
+        return StageUpdate(
+            taskId: task.id,
+            sourceStageId: source.id,
+            updateScope: .remainingStages,
+            updatedStages: [insertedBreak] + remaining,
+            removedStageIds: remaining.map(\.id),
+            reason: "A short break was added before the next step. The rest of the plan stays the same.",
+            requiresUserConfirmation: true
+        )
+    }
+
+    private func makeBreakStage(
+        taskId: String,
+        source: StagePlan,
+        title: String,
+        instruction: String,
+        completionCriteria: String,
+        estimatedSeconds: Int
+    ) -> StagePlan {
+        StagePlan(
+            taskId: taskId,
+            order: source.order + 1,
+            title: title,
+            instruction: instruction,
+            completionCriteria: completionCriteria,
+            stageType: .breakTime,
+            estimatedSeconds: min(900, max(60, estimatedSeconds)),
+            status: .adjusted,
+            createdBy: .module3FeedbackOptimization,
+            parentStageId: source.id
+        )
+    }
 }
 
 private let planOptimizationSystemPrompt = """
@@ -255,6 +315,7 @@ Rules:
 - Prefer currentStageOnly when the current step felt too big or unclear; split into 2-3 smaller steps.
 - Prefer remainingStages when the user needs more time, a break, or upcoming steps should change.
 - Keep each step concrete, visible, and completable in under 25 minutes.
+- For needBreak feedback, return exactly one breakTime stage. Choose a gentle break duration, but do not rewrite, remove, or summarize later learning stages.
 - Never shame the learner. Avoid words like lazy, failure, must, should.
 - stageType must be one of: reading, writing, thinking, practice, breakTime, review, other.
 """

@@ -579,6 +579,103 @@ final class FocusFlowCoreTests: XCTestCase {
         XCTAssertEqual(result.stageUpdate?.requiresUserConfirmation, true)
     }
 
+    func testNeedBreakFeedbackOnlyInsertsBreakBeforeUnchangedRemainingStages() async throws {
+        let directory = try temporaryDirectory()
+        let root = LocalDataDirectory(root: directory)
+        let dataCenter = LocalDataCenterService(directory: root)
+        let repository = LocalTaskRepository(directory: root)
+        let eventBus = AppEventBus(dataCenter: dataCenter)
+        let service = FeedbackOptimizationService(repository: repository, eventBus: eventBus)
+        let task = multiStageTask()
+        try await repository.save(task)
+
+        let feedback = StageFeedback(
+            taskId: task.id,
+            stageId: task.stages[0].id,
+            executionResultId: "result_need_break",
+            selectedLabel: "Need a break",
+            intent: .needBreak
+        )
+        let result = try await service.submitFeedback(feedback)
+
+        let update = try XCTUnwrap(result.stageUpdate)
+        XCTAssertEqual(update.updateScope, .remainingStages)
+        XCTAssertEqual(update.updatedStages.count, 3)
+        XCTAssertEqual(update.updatedStages[0].stageType, .breakTime)
+        XCTAssertEqual(update.updatedStages[1].title, task.stages[1].title)
+        XCTAssertEqual(update.updatedStages[2].title, task.stages[2].title)
+        XCTAssertEqual(update.removedStageIds, [task.stages[1].id, task.stages[2].id])
+
+        let execution = ExecutionService(
+            repository: repository,
+            runtimeStore: LocalRuntimeStore(directory: root),
+            eventBus: eventBus
+        )
+        try await execution.applyStageUpdate(update)
+        let updatedTask = try await repository.getTask(task.id)
+
+        XCTAssertEqual(updatedTask.stages.map(\.title), [
+            task.stages[0].title,
+            update.updatedStages[0].title,
+            task.stages[1].title,
+            task.stages[2].title
+        ])
+    }
+
+    func testNeedBreakLLMCanChooseBreakTimeButCannotRewriteRemainingStages() async throws {
+        let directory = try temporaryDirectory()
+        let root = LocalDataDirectory(root: directory)
+        let dataCenter = LocalDataCenterService(directory: root)
+        let repository = LocalTaskRepository(directory: root)
+        let eventBus = AppEventBus(dataCenter: dataCenter)
+        let service = FeedbackOptimizationService(
+            repository: repository,
+            eventBus: eventBus,
+            optimizationAgent: PlanOptimizationAgent(llmClient: FakeLLMClient(response: """
+            {
+              "shouldUpdate": true,
+              "updateScope": "remainingStages",
+              "reason": "Take a reset before continuing.",
+              "updatedStages": [
+                {
+                  "title": "Four-minute reset",
+                  "instruction": "Drink water and rest your eyes.",
+                  "completionCriteria": "Four minutes have passed.",
+                  "stageType": "breakTime",
+                  "estimatedSeconds": 240
+                },
+                {
+                  "title": "Rewritten next stage that should be ignored",
+                  "instruction": "This should not replace the real plan.",
+                  "completionCriteria": "Ignored.",
+                  "stageType": "writing",
+                  "estimatedSeconds": 600
+                }
+              ]
+            }
+            """))
+        )
+        let task = multiStageTask()
+        try await repository.save(task)
+
+        let feedback = StageFeedback(
+            taskId: task.id,
+            stageId: task.stages[0].id,
+            executionResultId: "result_need_break_llm",
+            selectedLabel: "Need a break",
+            intent: .needBreak
+        )
+        let result = try await service.submitFeedback(feedback)
+
+        let update = try XCTUnwrap(result.stageUpdate)
+        XCTAssertEqual(update.updatedStages.count, 3)
+        XCTAssertEqual(update.updatedStages[0].title, "Four-minute reset")
+        XCTAssertEqual(update.updatedStages[0].estimatedSeconds, 240)
+        XCTAssertEqual(update.updatedStages[1].title, task.stages[1].title)
+        XCTAssertEqual(update.updatedStages[2].title, task.stages[2].title)
+        XCTAssertFalse(update.updatedStages.map(\.title).contains("Rewritten next stage that should be ignored"))
+    }
+
     func testFeedbackOptimizationRecordsAgentRunEvents() async throws {
         let directory = try temporaryDirectory()
         let root = LocalDataDirectory(root: directory)
@@ -2213,6 +2310,53 @@ final class FocusFlowCoreTests: XCTestCase {
             status: .active,
             estimatedTotalSeconds: 300,
             stages: [stage]
+        )
+    }
+
+    private func multiStageTask() -> TaskPlan {
+        let taskId = "task_multi_stage"
+        let stages = [
+            StagePlan(
+                id: "stage_multi_1",
+                taskId: taskId,
+                order: 1,
+                title: "Read the abstract",
+                instruction: "Read the abstract and mark one sentence.",
+                completionCriteria: "One sentence is marked.",
+                stageType: .reading,
+                estimatedSeconds: 300,
+                status: .completed
+            ),
+            StagePlan(
+                id: "stage_multi_2",
+                taskId: taskId,
+                order: 2,
+                title: "Read the conclusion",
+                instruction: "Read the conclusion and notice the main claim.",
+                completionCriteria: "The main claim is noted.",
+                stageType: .reading,
+                estimatedSeconds: 420
+            ),
+            StagePlan(
+                id: "stage_multi_3",
+                taskId: taskId,
+                order: 3,
+                title: "Write one summary sentence",
+                instruction: "Write one sentence in your own words.",
+                completionCriteria: "One sentence is written.",
+                stageType: .writing,
+                estimatedSeconds: 300,
+                status: .adjusted
+            )
+        ]
+        return TaskPlan(
+            id: taskId,
+            originalInput: "Read a paper",
+            title: "Read a paper",
+            taskType: .reading,
+            status: .active,
+            estimatedTotalSeconds: stages.reduce(0) { $0 + $1.estimatedSeconds },
+            stages: stages
         )
     }
 }

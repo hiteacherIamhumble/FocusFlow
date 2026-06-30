@@ -56,7 +56,7 @@ public actor LocalTaskRepository: TaskRepositoryProtocol {
         case .remainingStages:
             if let sourceStageId = update.sourceStageId,
                let source = stages.first(where: { $0.id == sourceStageId }) {
-                stages.removeAll { $0.order > source.order && $0.status == .idle }
+                stages.removeAll { $0.order > source.order && ($0.status == .idle || $0.status == .adjusted) }
                 stages.append(contentsOf: update.updatedStages)
             } else {
                 stages.append(contentsOf: update.updatedStages)

@@ -289,22 +289,6 @@ private extension ExecutionWorkspaceView {
             .background(AppColor.warning.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
         }
 
-        if let breakRemaining = model.breakRemainingSeconds, breakRemaining > 0 {
-            HStack {
-                Image(systemName: "cup.and.saucer")
-                    .foregroundStyle(AppColor.warning)
-                Text("Break")
-                    .font(.headline)
-                    .foregroundStyle(AppColor.textPrimary)
-                Spacer()
-                Text(String(format: "%02d:%02d", breakRemaining / 60, breakRemaining % 60))
-                    .font(.system(.title3, design: .rounded).weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(AppColor.actionPrimary)
-            }
-            .padding(18)
-            .background(AppColor.surfaceCard, in: RoundedRectangle(cornerRadius: 8))
-        }
     }
 
     private func stageListSection(task: TaskPlan) -> some View {

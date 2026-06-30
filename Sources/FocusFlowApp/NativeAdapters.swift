@@ -164,9 +164,6 @@ struct FloatingMiniTimer: View {
     @EnvironmentObject private var model: FocusFlowAppModel
 
     private var displaySeconds: Int {
-        if let remaining = model.breakRemainingSeconds, remaining > 0 {
-            return remaining
-        }
         return model.remainingSeconds ?? currentStage?.estimatedSeconds ?? 0
     }
 
